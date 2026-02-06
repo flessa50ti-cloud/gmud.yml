@@ -6,10 +6,17 @@ on:
   pull_request:
     branches: ["main"]
   workflow_dispatch:
-
+    inputs:
+      dry_run:
+        description: "Simular integração (não chama GLPI)"
+        required: true
+        default: "true"
 permissions:
   contents: read
 
+
+env:
+  DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
 jobs:
   gmud_open_and_validate:
     runs-on: ubuntu-latest
@@ -33,6 +40,7 @@ jobs:
         run: |
           if [[ -n "${GITHUB_HEAD_REF:-}" ]]; then echo "ref_name=${GITHUB_HEAD_REF}" >> "$GITHUB_OUTPUT"; else echo "ref_name=${GITHUB_REF##*/}" >> "$GITHUB_OUTPUT"; fi
       - name: Init GLPI session
+        if: env.DRY_RUN != 'true'
         id: glpi_session
         shell: bash
         env:
@@ -46,7 +54,21 @@ jobs:
           session=$(echo "$body" | jq -r '.session_token // empty' 2>/dev/null || true)
           if [[ -z "${session}" ]]; then echo "ERRO initSession (http $code)"; echo "$body"; exit 1; fi
           echo "SESSION_TOKEN=${session}" >> "$GITHUB_OUTPUT"
+
+      - name: Create Change (DRY RUN)
+        if: env.DRY_RUN == 'true'
+        id: create_change
+        shell: bash
+        run: |
+          set -euo pipefail
+          REF=${{ steps.ref.outputs.ref_name }}
+          echo "Simulando criação de GMUD no GLPI (DRY_RUN=true)"
+          echo "Repo: ${GITHUB_REPOSITORY}"
+          echo "Ref: ${REF}"
+          echo "CHANGE_ID=TEST-${GITHUB_RUN_ID}" >> "$GITHUB_OUTPUT"
+
       - name: Create Change
+        if: env.DRY_RUN != 'true'
         id: create_change
         shell: bash
         env:
@@ -63,6 +85,7 @@ jobs:
           if [[ -z "${CHANGE_ID}" ]]; then echo "ERRO create Change (http $code)"; echo "$body"; exit 1; fi
           echo "CHANGE_ID=${CHANGE_ID}" >> "$GITHUB_OUTPUT"
       - name: Post followup - start
+        if: env.DRY_RUN != 'true'
         shell: bash
         env:
           SESSION_TOKEN: ${{ steps.glpi_session.outputs.SESSION_TOKEN }}
@@ -101,7 +124,10 @@ jobs:
       STATUS_ROLLBACK: "11"
     steps:
       - uses: actions/checkout@v4
+      - name: Ensure jq
+        run: sudo apt-get update && sudo apt-get install -y jq
       - name: Init GLPI session
+        if: env.DRY_RUN != 'true'
         id: glpi_session
         shell: bash
         run: |
@@ -115,8 +141,14 @@ jobs:
         env:
           SESSION_TOKEN: ${{ steps.glpi_session.outputs.SESSION_TOKEN }}
         run: |
-          FOLLOW=$(jq -n --arg itemtype "Change" --argjson items_id "${CHANGE_ID}" --arg content "Aprovação gerencial concedida no GitHub Environment 'production'. Iniciando deploy. Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" '{input:{itemtype:$itemtype, items_id:$items_id, content:$content, is_private:0}}')
-          curl -sS -X POST -H "Content-Type: application/json" -H "Session-Token: ${SESSION_TOKEN}" -H "App-Token: ${APP_TOKEN}" -d "${FOLLOW}" "${GLPI_API_BASE}/ITILFollowup" || true
+          set -euo pipefail
+          if [[ "${DRY_RUN}" == "true" ]]; then
+            echo "(DRY RUN) Aprovação registrada (GitHub Environment 'production') para CHANGE_ID=${CHANGE_ID}"
+          else
+            FOLLOW=$(jq -n --arg itemtype "Change" --argjson items_id "${CHANGE_ID}"               --arg content "Aprovação gerencial concedida no GitHub Environment 'production'. Iniciando deploy. Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"               '{input:{itemtype:$itemtype, items_id:$items_id, content:$content, is_private:0}}')
+            curl -sS -X POST -H "Content-Type: application/json" -H "Session-Token: ${SESSION_TOKEN}" -H "App-Token: ${APP_TOKEN}" -d "${FOLLOW}" "${GLPI_API_BASE}/ITILFollowup"
+          fi
+
       - name: Deploy (placeholder)
         id: deploy
         shell: bash
