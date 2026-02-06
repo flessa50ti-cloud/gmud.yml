@@ -6,11 +6,6 @@ on:
   pull_request:
     branches: ["main"]
   workflow_dispatch:
-    inputs:
-      dry_run:
-        description: "Simular integração (não chama GLPI)"
-        required: true
-        default: "true"
 
 permissions:
   contents: read
@@ -21,14 +16,13 @@ jobs:
     outputs:
       change_id: ${{ steps.create_change.outputs.CHANGE_ID }}
     env:
-      # DRY_RUN só vira true quando for workflow_dispatch e input dry_run=true
-      DRY_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run) || 'false' }}
+      # PR e workflow_dispatch = DRY_RUN (sem GLPI). Push no main = REAL
+      DRY_RUN: ${{ github.event_name != 'push' }}
 
       GLPI_API_BASE: ${{ secrets.GLPI_API_BASE }}
       APP_TOKEN: ${{ secrets.GLPI_APP_TOKEN }}
       USER_TOKEN: ${{ secrets.GLPI_USER_TOKEN }}
       CATEGORY_ID: ${{ secrets.GLPI_CHANGE_CATEGORY_ID }}
-
       STATUS_APPROVAL_REQUIRED: "3" # ajuste conforme seu GLPI
 
     steps:
@@ -76,11 +70,12 @@ jobs:
         run: |
           set -euo pipefail
           REF="${{ steps.ref.outputs.ref_name }}"
-
           echo "DRY_RUN=${DRY_RUN}"
 
           if [[ "${DRY_RUN}" == "true" ]]; then
             echo "Simulando criação de GMUD (sem GLPI)"
+            echo "Repo: ${GITHUB_REPOSITORY}"
+            echo "Ref: ${REF}"
             echo "CHANGE_ID=TEST-${GITHUB_RUN_ID}" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -136,12 +131,7 @@ Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
     runs-on: ubuntu-latest
     environment: production
     env:
-      DRY_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run) || 'false' }}
-
-      GLPI_API_BASE: ${{ secrets.GLPI_API_BASE }}
-      APP_TOKEN: ${{ secrets.GLPI_APP_TOKEN }}
-      USER_TOKEN: ${{ secrets.GLPI_USER_TOKEN }}
-
+      DRY_RUN: ${{ github.event_name != 'push' }}
       CHANGE_ID: ${{ needs.gmud_open_and_validate.outputs.change_id }}
 
     steps:
