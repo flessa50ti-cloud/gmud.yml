@@ -1,2 +1,150 @@
-﻿# cole aqui exatamente o conteúdo YAML que passei no bloco acima, sem a linha inicial ```yaml nem name=...
-# (aqui vai todo o YAML; substitua por copiar/colar o bloco inteiro do passo 1)
+﻿name: GLPI GMUD (Auditoria)
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gmud_open_and_validate:
+    runs-on: ubuntu-latest
+    outputs:
+      change_id: ${{ steps.create_change.outputs.CHANGE_ID }}
+    env:
+      GLPI_API_BASE: ${{ secrets.GLPI_API_BASE }}
+      APP_TOKEN: ${{ secrets.GLPI_APP_TOKEN }}
+      USER_TOKEN: ${{ secrets.GLPI_USER_TOKEN }}
+      CATEGORY_ID: ${{ secrets.GLPI_CHANGE_CATEGORY_ID }}
+      STATUS_VALIDATION_IN_PROGRESS: "2"
+      STATUS_APPROVAL_REQUIRED: "3"
+      STATUS_VALIDATED: "4"
+      STATUS_FAILED: "10"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ensure jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+      - name: Compute ref
+        id: ref
+        run: |
+          if [[ -n "${GITHUB_HEAD_REF:-}" ]]; then echo "ref_name=${GITHUB_HEAD_REF}" >> "$GITHUB_OUTPUT"; else echo "ref_name=${GITHUB_REF##*/}" >> "$GITHUB_OUTPUT"; fi
+      - name: Init GLPI session
+        id: glpi_session
+        shell: bash
+        env:
+          APP_TOKEN: ${{ env.APP_TOKEN }}
+          USER_TOKEN: ${{ env.USER_TOKEN }}
+          GLPI_API_BASE: ${{ env.GLPI_API_BASE }}
+        run: |
+          set -euo pipefail
+          resp=$(curl -sS -w "\n%{http_code}" -X GET -H "Content-Type: application/json" -H "App-Token: ${APP_TOKEN}" -H "Authorization: user_token ${USER_TOKEN}" "${GLPI_API_BASE}/initSession") || true
+          body=$(echo "$resp" | sed '$d'); code=$(echo "$resp" | tail -n1)
+          session=$(echo "$body" | jq -r '.session_token // empty' 2>/dev/null || true)
+          if [[ -z "${session}" ]]; then echo "ERRO initSession (http $code)"; echo "$body"; exit 1; fi
+          echo "SESSION_TOKEN=${session}" >> "$GITHUB_OUTPUT"
+      - name: Create Change
+        id: create_change
+        shell: bash
+        env:
+          SESSION_TOKEN: ${{ steps.glpi_session.outputs.SESSION_TOKEN }}
+        run: |
+          set -euo pipefail
+          REF=${{ steps.ref.outputs.ref_name }}
+          TITLE="[GMUD][GITHUB] ${GITHUB_REPOSITORY} - ${REF} - ${GITHUB_SHA:0:7}"
+          BODY="GMUD criada automaticamente pelo GitHub Actions."
+          PAYLOAD=$(jq -n --arg name "$TITLE" --arg content "$BODY" '{input:{name:$name, content:$content}}')
+          resp=$(curl -sS -w "\n%{http_code}" -X POST -H "Content-Type: application/json" -H "Session-Token: ${SESSION_TOKEN}" -H "App-Token: ${APP_TOKEN}" -d "${PAYLOAD}" "${GLPI_API_BASE}/Change") || true
+          body=$(echo "$resp" | sed '$d'); code=$(echo "$resp" | tail -n1)
+          CHANGE_ID=$(echo "$body" | jq -r '.id // .ids[0] // empty' 2>/dev/null || true)
+          if [[ -z "${CHANGE_ID}" ]]; then echo "ERRO create Change (http $code)"; echo "$body"; exit 1; fi
+          echo "CHANGE_ID=${CHANGE_ID}" >> "$GITHUB_OUTPUT"
+      - name: Post followup - start
+        shell: bash
+        env:
+          SESSION_TOKEN: ${{ steps.glpi_session.outputs.SESSION_TOKEN }}
+        run: |
+          FOLLOW=$(jq -n --arg itemtype "Change" --argjson items_id "${{ steps.create_change.outputs.CHANGE_ID }}" --arg content "Início da validação técnica no pipeline. Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" '{input:{itemtype:$itemtype, items_id:$items_id, content:$content, is_private:0}}')
+          curl -sS -X POST -H "Content-Type: application/json" -H "Session-Token: ${SESSION_TOKEN}" -H "App-Token: ${APP_TOKEN}" -d "${FOLLOW}" "${GLPI_API_BASE}/ITILFollowup" || true
+      - name: Validation (placeholder)
+        run: |
+          echo "Executar testes/build/scans aqui..."
+      - name: Mark awaiting approval
+        if: success()
+        shell: bash
+        env:
+          SESSION_TOKEN: ${{ steps.glpi_session.outputs.SESSION_TOKEN }}
+        run: |
+          PAYLOAD=$(jq -n --argjson status "${STATUS_APPROVAL_REQUIRED}" '{input:{status:$status}}')
+          curl -sS -X PUT -H "Content-Type: application/json" -H "Session-Token: ${SESSION_TOKEN}" -H "App-Token: ${APP_TOKEN}" -d "${PAYLOAD}" "${GLPI_API_BASE}/Change/${{ steps.create_change.outputs.CHANGE_ID }}" || true
+      - name: Kill GLPI session
+        if: always()
+        shell: bash
+        env:
+          SESSION_TOKEN: ${{ steps.glpi_session.outputs.SESSION_TOKEN }}
+        run: |
+          if [[ -n "${SESSION_TOKEN:-}" ]]; then curl -sS -X GET -H "Session-Token: ${SESSION_TOKEN}" -H "App-Token: ${APP_TOKEN}" "${GLPI_API_BASE}/killSession" || true; fi
+
+  deploy_with_approval:
+    needs: [gmud_open_and_validate]
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      GLPI_API_BASE: ${{ secrets.GLPI_API_BASE }}
+      APP_TOKEN: ${{ secrets.GLPI_APP_TOKEN }}
+      USER_TOKEN: ${{ secrets.GLPI_USER_TOKEN }}
+      CHANGE_ID: ${{ needs.gmud_open_and_validate.outputs.change_id }}
+      STATUS_IMPLEMENTED: "6"
+      STATUS_ROLLBACK: "11"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Init GLPI session
+        id: glpi_session
+        shell: bash
+        run: |
+          resp=$(curl -sS -w "\n%{http_code}" -X GET -H "Content-Type: application/json" -H "App-Token: ${APP_TOKEN}" -H "Authorization: user_token ${USER_TOKEN}" "${GLPI_API_BASE}/initSession") || true
+          body=$(echo "$resp" | sed '$d'); code=$(echo "$resp" | tail -n1)
+          session=$(echo "$body" | jq -r '.session_token // empty' 2>/dev/null || true)
+          if [[ -z "${session}" ]]; then echo "ERRO initSession (http $code)"; echo "$body"; exit 1; fi
+          echo "SESSION_TOKEN=${session}" >> "$GITHUB_OUTPUT"
+      - name: Registrar aprovação (evidência)
+        shell: bash
+        env:
+          SESSION_TOKEN: ${{ steps.glpi_session.outputs.SESSION_TOKEN }}
+        run: |
+          FOLLOW=$(jq -n --arg itemtype "Change" --argjson items_id "${CHANGE_ID}" --arg content "Aprovação gerencial concedida no GitHub Environment 'production'. Iniciando deploy. Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" '{input:{itemtype:$itemtype, items_id:$items_id, content:$content, is_private:0}}')
+          curl -sS -X POST -H "Content-Type: application/json" -H "Session-Token: ${SESSION_TOKEN}" -H "App-Token: ${APP_TOKEN}" -d "${FOLLOW}" "${GLPI_API_BASE}/ITILFollowup" || true
+      - name: Deploy (placeholder)
+        id: deploy
+        shell: bash
+        run: |
+          echo "Execute seu deploy aqui..."
+      - name: Marcar GMUD como implementada + evidência
+        if: success()
+        shell: bash
+        env:
+          SESSION_TOKEN: ${{ steps.glpi_session.outputs.SESSION_TOKEN }}
+        run: |
+          PAYLOAD=$(jq -n --argjson status "${STATUS_IMPLEMENTED}" '{input:{status:$status}}')
+          curl -sS -X PUT -H "Content-Type: application/json" -H "Session-Token: ${SESSION_TOKEN}" -H "App-Token: ${APP_TOKEN}" -d "${PAYLOAD}" "${GLPI_API_BASE}/Change/${CHANGE_ID}" || true
+          FOLLOW=$(jq -n --arg itemtype "Change" --argjson items_id "${CHANGE_ID}" --arg content "Deploy concluído com sucesso. GMUD marcada como implementada." '{input:{itemtype:$itemtype, items_id:$items_id, content:$content, is_private:0}}')
+          curl -sS -X POST -H "Content-Type: application/json" -H "Session-Token: ${SESSION_TOKEN}" -H "App-Token: ${APP_TOKEN}" -d "${FOLLOW}" "${GLPI_API_BASE}/ITILFollowup" || true
+      - name: Rollback (se falhar)
+        if: failure()
+        id: rollback
+        shell: bash
+        run: |
+          echo "Executando rollback..."; echo "Rollback OK."
+      - name: Marcar GMUD como rollback + evidência
+        if: failure()
+        shell: bash
+        env:
+          SESSION_TOKEN: ${{ steps.glpi_session.outputs.SESSION_TOKEN }}
+        run: |
+          PAYLOAD=$(jq -n --argjson status "${STATUS_ROLLBACK}" '{input:{status:$status}}')
+          curl -sS -X PUT -H "Content-Type: application/json" -H "Session-Token: ${SESSION_TOKEN}" -H "App-Token: ${APP_TOKEN}" -d "${PAYLOAD}" "${GLPI_API_BASE}/Change/${CHANGE_ID}" || true
+          FOLLOW=$(jq -n --arg itemtype "Change" --argjson items_id "${CHANGE_ID}" --arg content "Falha no deploy/pipeline. Rollback executado. Ver run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" '{input:{itemtype:$itemtype, items_id:$items_id, content:$content, is_private:0}}')
+          curl -sS -X POST -H "Content-Type: application/json" -H "Session-Token: ${SESSION_TOKEN}" -H "App-Token: ${APP_TOKEN}" -d "${FOLLOW}" "${GLPI_API_BASE}/ITILFollowup" || true
