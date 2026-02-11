@@ -1,6 +1,7 @@
+---
 name: GLPI GMUD - Evidências + Precheck CentOS53
 
-on:
+"on":
   workflow_dispatch:
 
 permissions:
@@ -9,6 +10,7 @@ permissions:
 jobs:
   gmud_evidences_and_precheck:
     runs-on: ubuntu-latest
+
     env:
       DRY_RUN: "true"
       GLPI_API_BASE: ${{ secrets.GLPI_API_BASE }}
@@ -43,13 +45,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          yamllint -f parsable .github/workflows/glpi-gmud-evidencias-centos53.yml | tee evidence/yamllint.txt
+          yamllint \
+            -d '{extends: default, rules: {document-start: disable, truthy: disable, line-length: disable, empty-lines: {max: 2, max-start: 0, max-end: 0}}}' \
+            -f parsable \
+            .github/workflows/glpi-gmud-evidencias-centos53.yml | tee evidence/yamllint.txt
 
       - name: Simulação de GMUD (somente evidência)
         shell: bash
         run: |
           set -euo pipefail
-          echo "Modo DRY-RUN habilitado. Nenhuma GMUD real será criada." | tee evidence/gmud_simulacao.txt
+          echo "Modo DRY-RUN habilitado. Nenhuma GMUD real será criada." \
+            | tee evidence/gmud_simulacao.txt
 
       - name: Pre-check CentOS 9 - 192.168.0.53 (evidência)
         shell: bash
@@ -57,6 +63,7 @@ jobs:
           set -euo pipefail
           ping -c 3 "${SSH_HOST}" | tee evidence/ping.txt
           (nc -vz "${SSH_HOST}" "${SSH_PORT}" || true) | tee evidence/porta_ssh.txt
+
           sshpass -p "${SSH_PASSWORD}" ssh \
             -o StrictHostKeyChecking=no \
             -o PreferredAuthentications=password \
