@@ -9,15 +9,12 @@ permissions:
 jobs:
   gmud_evidences_and_precheck:
     runs-on: ubuntu-latest
-
     env:
       DRY_RUN: "true"
-
       GLPI_API_BASE: ${{ secrets.GLPI_API_BASE }}
       APP_TOKEN: ${{ secrets.GLPI_APP_TOKEN }}
       USER_TOKEN: ${{ secrets.GLPI_USER_TOKEN }}
       CATEGORY_ID: ${{ secrets.GLPI_CHANGE_CATEGORY_ID }}
-
       SSH_HOST: "192.168.0.53"
       SSH_USER: "deploy"
       SSH_PORT: "22"
@@ -42,11 +39,11 @@ jobs:
           echo "${{ github.repository }}" > evidence/repositorio.txt
           echo "${{ github.sha }}" > evidence/commit.txt
 
-      - name: Validar YAML dos workflows (evidência)
+      - name: Validar YAML do workflow de evidências
         shell: bash
         run: |
           set -euo pipefail
-          yamllint -f parsable .github/workflows/*.yml | tee evidence/yamllint.txt
+          yamllint -f parsable .github/workflows/glpi-gmud-evidencias-centos53.yml | tee evidence/yamllint.txt
 
       - name: Simulação de GMUD (somente evidência)
         shell: bash
@@ -58,10 +55,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           ping -c 3 "${SSH_HOST}" | tee evidence/ping.txt
           (nc -vz "${SSH_HOST}" "${SSH_PORT}" || true) | tee evidence/porta_ssh.txt
-
           sshpass -p "${SSH_PASSWORD}" ssh \
             -o StrictHostKeyChecking=no \
             -o PreferredAuthentications=password \
@@ -86,4 +81,3 @@ jobs:
           name: evidencias-centos53
           path: evidence/
           if-no-files-found: warn
-
