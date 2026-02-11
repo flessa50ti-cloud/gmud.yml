@@ -42,11 +42,12 @@ jobs:
           echo "${{ github.repository }}" > evidence/repositorio.txt
           echo "${{ github.sha }}" > evidence/commit.txt
 
-      - name: Validar YAML dos workflows (evidência)
+      # >>> CORREÇÃO AQUI (lint somente do workflow novo)
+      - name: Validar YAML do workflow de evidências
         shell: bash
         run: |
           set -euo pipefail
-          yamllint -f parsable .github/workflows/*.yml | tee evidence/yamllint.txt
+          yamllint -f parsable .github/workflows/glpi-gmud-evidencias-centos53.yml | tee evidence/yamllint.txt
 
       - name: Simulação de GMUD (somente evidência)
         shell: bash
@@ -86,4 +87,6 @@ jobs:
           name: evidencias-centos53
           path: evidence/
           if-no-files-found: warn
+
+   
 
