@@ -106,6 +106,14 @@ jobs:
             ]
           }"
 
+      - name: Enviar para Grafana Cloud
+        if: always()
+        run: |
+          LOG_TEXT=$(cat evidence/servidor_centos53.txt | jq -aRs .)
+          curl -u "1483519:${{ secrets.GRAFANA_RW_API_KEY }}" \
+          -H "Content-Type: application/json" \
+          -X POST "https://logs-prod-024.grafana.net" \
+          --data "{ \"streams\": [ { \"stream\": { \"job\": \"gmud_evidencia\" }, \"values\": [ [ \"$(date +%s%N)\", $LOG_TEXT ] ] } ] }"
 
    
 
