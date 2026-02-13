@@ -87,6 +87,25 @@ jobs:
           name: evidencias-centos53
           path: evidence/
           if-no-files-found: warn
+                - name: Enviar Evidências para Grafana Loki
+        if: always()
+        run: |
+          # Formata o log para o padrão JSON do Loki
+          LOG_TEXT=$(cat evidence/servidor_centos53.txt | jq -aRs .)
+          TIMESTAMP=$(date +%s%N)
+
+          curl -u "1483519:${{ secrets.GRAFANA_RW_API_KEY }}" \
+          -H "Content-Type: application/json" \
+          -X POST "https://logs-prod-024.grafana.net/loki/api/v1/push" \
+          --data "{
+            \"streams\": [
+              {
+                \"stream\": { \"job\": \"gmud_evidencia\", \"server\": \"centos53\" },
+                \"values\": [ [ \"$TIMESTAMP\", $LOG_TEXT ] ]
+              }
+            ]
+          }"
+
 
    
 
