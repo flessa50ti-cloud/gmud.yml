@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   gmud_evidences_and_precheck:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
 
     env:
       DRY_RUN: "true"
@@ -17,10 +17,9 @@ jobs:
       APP_TOKEN: ${{ secrets.GLPI_APP_TOKEN }}
       USER_TOKEN: ${{ secrets.GLPI_USER_TOKEN }}
       CATEGORY_ID: ${{ secrets.GLPI_CHANGE_CATEGORY_ID }}
+
       SSH_HOST: "192.168.0.53"
-      SSH_USER: "deploy"
       SSH_PORT: "22"
-      SSH_PASSWORD: ${{ secrets.CENTOS53_DEPLOY_PASSWORD }}
 
     steps:
       - uses: actions/checkout@v4
@@ -29,8 +28,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y jq sshpass yamllint netcat-openbsd
+          sudo dnf install -y jq yamllint nc iproute iputils procps-ng
 
       - name: Preparar pasta de evidências
         shell: bash
@@ -40,6 +38,7 @@ jobs:
           date -Is > evidence/data_execucao.txt
           echo "${{ github.repository }}" > evidence/repositorio.txt
           echo "${{ github.sha }}" > evidence/commit.txt
+          hostname > evidence/runner_hostname.txt
 
       - name: Validar YAML do workflow de evidências
         shell: bash
@@ -54,32 +53,42 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "Modo DRY-RUN habilitado. Nenhuma GMUD real será criada." \
-            | tee evidence/gmud_simulacao.txt
+          echo "Modo DRY-RUN habilitado. Nenhuma GMUD real será criada." | tee evidence/gmud_simulacao.txt
 
-      - name: Pre-check CentOS 9 - 192.168.0.53 (evidência)
+      - name: Pre-check CentOS 9 - 192.168.0.53 (evidência local – sem falhar por ping)
         shell: bash
         run: |
           set -euo pipefail
-          ping -c 3 "${SSH_HOST}" | tee evidence/ping.txt
-          (nc -vz "${SSH_HOST}" "${SSH_PORT}" || true) | tee evidence/porta_ssh.txt
 
-          sshpass -p "${SSH_PASSWORD}" ssh \
-            -o StrictHostKeyChecking=no \
-            -o PreferredAuthentications=password \
-            -o PubkeyAuthentication=no \
-            -p "${SSH_PORT}" \
-            "${SSH_USER}@${SSH_HOST}" \
-            '
-              echo "== HOSTNAMECTL ==";
-              hostnamectl;
-              echo "== OS-RELEASE ==";
-              cat /etc/os-release;
-              echo "== UPTIME ==";
-              uptime;
-              echo "== DISCO ==";
-              df -h;
-            ' | tee evidence/servidor_centos53.txt
+          echo "== DATA / HORA ==" | tee evidence/precheck_time.txt
+          date -Is | tee -a evidence/precheck_time.txt
+
+          echo "== HOSTNAMECTL ==" | tee evidence/hostnamectl.txt
+          hostnamectl | tee -a evidence/hostnamectl.txt
+
+          echo "== OS RELEASE ==" | tee evidence/os-release.txt
+          cat /etc/os-release | tee -a evidence/os-release.txt
+
+          echo "== UPTIME ==" | tee evidence/uptime.txt
+          uptime | tee -a evidence/uptime.txt
+
+          echo "== CPU / MEM ==" | tee evidence/memoria.txt
+          free -h | tee -a evidence/memoria.txt
+
+          echo "== DISCO ==" | tee evidence/disco.txt
+          df -h | tee -a evidence/disco.txt
+
+          echo "== INTERFACES (ip a) ==" | tee evidence/ip_a.txt
+          ip a | tee -a evidence/ip_a.txt
+
+          echo "== ROTAS (ip route) ==" | tee evidence/ip_route.txt
+          ip route | tee -a evidence/ip_route.txt
+
+          echo "== PING ${SSH_HOST} (nao bloqueia pipeline) ==" | tee evidence/ping.txt
+          ping -c 3 "${SSH_HOST}" | tee -a evidence/ping.txt || true
+
+          echo "== PORTA SSH ${SSH_PORT} (nao bloqueia pipeline) ==" | tee evidence/porta_ssh.txt
+          (nc -vz "${SSH_HOST}" "${SSH_PORT}" || true) | tee -a evidence/porta_ssh.txt
 
       - name: Publicar evidências
         if: always()
