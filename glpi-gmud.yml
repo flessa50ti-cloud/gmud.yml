@@ -17,15 +17,19 @@ permissions:
 
 jobs:
   gmud_open_and_validate:
-    runs-on: ubuntu-latest
+    # Ajuste as labels para as do seu runner:
+    # - Se não tiver label "glpi", remova ela e deixe [self-hosted, linux]
+    runs-on: [self-hosted, linux, glpi]
+
     outputs:
       change_id: ${{ steps.create_change.outputs.CHANGE_ID }}
+      effective_dry_run: ${{ steps.mode.outputs.DRY_RUN_EFFECTIVE }}
 
     env:
       # push no main = REAL
       # pull_request = DRY
       # workflow_dispatch = DRY por padrão, pode forçar REAL com input real_glpi=true
-      DRY_RUN: ${{ github.event_name != 'push' && github.event.inputs.real_glpi != 'true' }}
+      DRY_RUN_REQUESTED: ${{ github.event_name != 'push' && github.event.inputs.real_glpi != 'true' }}
 
       GLPI_API_BASE: ${{ secrets.GLPI_API_BASE }}
       APP_TOKEN: ${{ secrets.GLPI_APP_TOKEN }}
@@ -36,20 +40,93 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Ensure jq
-        run: sudo apt-get update && sudo apt-get install -y jq
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v jq >/dev/null 2>&1; then
+            # Ubuntu/Debian
+            if command -v apt-get >/dev/null 2>&1; then
+              sudo apt-get update && sudo apt-get install -y jq
+            # RHEL/CentOS/Fedora
+            elif command -v yum >/dev/null 2>&1; then
+              sudo yum install -y jq
+            elif command -v dnf >/dev/null 2>&1; then
+              sudo dnf install -y jq
+            else
+              echo "jq não encontrado e não consegui instalar automaticamente."
+              exit 1
+            fi
+          fi
+          jq --version
 
       - name: Show context
         shell: bash
         run: |
           set -euo pipefail
           echo "event_name=${GITHUB_EVENT_NAME}"
-          echo "DRY_RUN=${DRY_RUN}"
+          echo "DRY_RUN_REQUESTED=${DRY_RUN_REQUESTED}"
           echo "repo=${GITHUB_REPOSITORY}"
           echo "ref=${GITHUB_REF}"
           echo "sha=${GITHUB_SHA}"
 
-      - name: Validate required secrets (when REAL)
-        if: env.DRY_RUN != 'true'
+      - name: Normalize GLPI_API_BASE
+        id: glpi_base
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="${GLPI_API_BASE:-}"
+          base="${base%/}"
+          if [[ -z "$base" ]]; then
+            echo "GLPI_API_BASE está vazio (secret faltando?)."
+            echo "GLPI_BASE=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "$base" != *"/apirest.php" ]]; then
+            base="${base}/apirest.php"
+          fi
+          echo "GLPI_BASE=${base}" >> "$GITHUB_OUTPUT"
+          echo "Using GLPI API base: ${base}"
+
+      - name: Check GLPI connectivity (decide effective mode)
+        id: mode
+        shell: bash
+        env:
+          GLPI_BASE: ${{ steps.glpi_base.outputs.GLPI_BASE }}
+        run: |
+          set -euo pipefail
+
+          # default: respeita o DRY solicitado
+          dry="${DRY_RUN_REQUESTED}"
+
+          # se foi solicitado REAL, checa se a URL é acessível
+          if [[ "${DRY_RUN_REQUESTED}" != "true" ]]; then
+            if [[ -z "${GLPI_BASE:-}" ]]; then
+              echo "GLPI_BASE vazio -> forçando DRY_RUN."
+              dry="true"
+            else
+              echo "Testando conectividade: ${GLPI_BASE}/getMyProfiles"
+              # HEAD às vezes não funciona no GLPI; usamos GET leve e timeout curto
+              code="$(curl -sS -o /dev/null -w "%{http_code}" \
+                --connect-timeout 5 --max-time 15 \
+                -H "App-Token: ${APP_TOKEN}" \
+                -H "Authorization: user_token ${USER_TOKEN}" \
+                "${GLPI_BASE}/getMyProfiles" || true)"
+
+              echo "connectivity_http_code=${code}"
+
+              # 200/206/401/403 indicam que chegou no servidor (mesmo que credencial/perfil falhe)
+              if [[ "$code" != "200" && "$code" != "206" && "$code" != "401" && "$code" != "403" ]]; then
+                echo "Sem conectividade com GLPI (http ${code}) -> forçando DRY_RUN."
+                dry="true"
+              fi
+            fi
+          fi
+
+          echo "DRY_RUN_EFFECTIVE=${dry}" >> "$GITHUB_OUTPUT"
+          echo "DRY_RUN_EFFECTIVE=${dry}"
+
+      - name: Validate required secrets (when REAL effective)
+        if: steps.mode.outputs.DRY_RUN_EFFECTIVE != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -61,27 +138,8 @@ jobs:
             fi
           done
           if [[ "$missing" -eq 1 ]]; then
-            echo "Ajuste seus secrets em Settings > Secrets and variables > Actions."
             exit 1
           fi
-
-      - name: Normalize GLPI_API_BASE
-        id: glpi_base
-        shell: bash
-        run: |
-          set -euo pipefail
-          base="${GLPI_API_BASE:-}"
-          # remove trailing slash
-          base="${base%/}"
-
-          # Se o usuário passou a URL do GLPI (ex: https://glpi.dominio.com),
-          # adiciona /apirest.php automaticamente.
-          if [[ "$base" != *"/apirest.php" ]]; then
-            base="${base}/apirest.php"
-          fi
-
-          echo "GLPI_BASE=${base}" >> "$GITHUB_OUTPUT"
-          echo "Using GLPI API base: ${base}"
 
       - name: Compute ref name
         id: ref
@@ -95,7 +153,7 @@ jobs:
           fi
 
       - name: Init GLPI session
-        if: env.DRY_RUN != 'true'
+        if: steps.mode.outputs.DRY_RUN_EFFECTIVE != 'true'
         id: glpi_session
         shell: bash
         env:
@@ -103,9 +161,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "InitSession: ${GLPI_BASE}/initSession"
-
           resp=$(curl -sS -w "\n%{http_code}" \
+            --connect-timeout 5 --max-time 30 \
             -X GET \
             -H "Content-Type: application/json" \
             -H "App-Token: ${APP_TOKEN}" \
@@ -120,7 +177,6 @@ jobs:
           session=$(echo "$body" | jq -r '.session_token // empty' 2>/dev/null || true)
           if [[ -z "${session}" ]]; then
             echo "ERRO initSession (http ${code})"
-            echo "Body:"
             echo "$body"
             exit 1
           fi
@@ -133,6 +189,7 @@ jobs:
         env:
           GLPI_BASE: ${{ steps.glpi_base.outputs.GLPI_BASE }}
           SESSION_TOKEN: ${{ steps.glpi_session.outputs.SESSION_TOKEN }}
+          DRY_RUN: ${{ steps.mode.outputs.DRY_RUN_EFFECTIVE }}
         run: |
           set -euo pipefail
 
@@ -141,8 +198,6 @@ jobs:
 
           if [[ "${DRY_RUN}" == "true" ]]; then
             echo "Simulando criação de GMUD (sem GLPI)"
-            echo "Repo: ${GITHUB_REPOSITORY}"
-            echo "Ref: ${REF}"
             echo "CHANGE_ID=TEST-${GITHUB_RUN_ID}" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -151,8 +206,6 @@ jobs:
           BODY="GMUD criada automaticamente pelo GitHub Actions.\nRun: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
 
           if [[ -n "${CATEGORY_ID:-}" ]]; then
-            # CATEGORY_ID deve ser número. Se vier string, jq --argjson pode falhar.
-            # Vamos garantir número:
             if ! [[ "${CATEGORY_ID}" =~ ^[0-9]+$ ]]; then
               echo "CATEGORY_ID não é numérico: '${CATEGORY_ID}'. Ajuste o secret GLPI_CHANGE_CATEGORY_ID."
               exit 1
@@ -167,8 +220,8 @@ jobs:
               '{input:{name:$name, content:$content}}')
           fi
 
-          echo "POST Change: ${GLPI_BASE}/Change"
           resp=$(curl -sS -w "\n%{http_code}" \
+            --connect-timeout 5 --max-time 60 \
             -X POST \
             -H "Content-Type: application/json" \
             -H "Session-Token: ${SESSION_TOKEN}" \
@@ -181,11 +234,9 @@ jobs:
 
           echo "createChange http_code=${code}"
 
-          # GLPI costuma devolver {"id":123} ou {"ids":[123]}
           CHANGE_ID=$(echo "$body" | jq -r '.id // .ids[0] // empty' 2>/dev/null || true)
           if [[ -z "${CHANGE_ID}" ]]; then
             echo "ERRO create Change (http ${code})"
-            echo "Body:"
             echo "$body"
             exit 1
           fi
@@ -200,7 +251,7 @@ jobs:
           echo "Executar testes/build/scans aqui..."
 
       - name: Kill GLPI session
-        if: always() && env.DRY_RUN != 'true'
+        if: always() && steps.mode.outputs.DRY_RUN_EFFECTIVE != 'true'
         shell: bash
         env:
           GLPI_BASE: ${{ steps.glpi_base.outputs.GLPI_BASE }}
@@ -208,7 +259,6 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -n "${SESSION_TOKEN:-}" ]]; then
-            echo "killSession: ${GLPI_BASE}/killSession"
             curl -sS -X GET \
               -H "Session-Token: ${SESSION_TOKEN}" \
               -H "App-Token: ${APP_TOKEN}" \
@@ -217,10 +267,10 @@ jobs:
 
   deploy_with_approval:
     needs: [gmud_open_and_validate]
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, glpi]
     environment: production
     env:
-      DRY_RUN: ${{ github.event_name != 'push' && github.event.inputs.real_glpi != 'true' }}
+      DRY_RUN: ${{ needs.gmud_open_and_validate.outputs.effective_dry_run }}
       CHANGE_ID: ${{ needs.gmud_open_and_validate.outputs.change_id }}
 
     steps:
