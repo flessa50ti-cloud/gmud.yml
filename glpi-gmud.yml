@@ -1,352 +1,158 @@
-name: GLPI - Criar GMUD (logs + validação)
+name: GLPI GMUD (Auditoria)
 
 on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
   workflow_dispatch:
-    inputs:
-      title:
-        description: "Título da GMUD (Change)"
-        required: true
-        default: "GMUD - Deploy"
-      description:
-        description: "Descrição detalhada"
-        required: true
-        default: "Mudança criada automaticamente via GitHub Actions."
-      impact:
-        description: "Impacto (1=baixo, 2=médio, 3=alto, 4=muito alto)"
-        required: true
-        default: "2"
-      urgency:
-        description: "Urgência (1=baixa, 2=média, 3=alta, 4=muito alta)"
-        required: true
-        default: "2"
-      priority:
-        description: "Prioridade (1=baixa, 2=média, 3=alta, 4=muito alta)"
-        required: true
-        default: "2"
-      itil_category_id:
-        description: "ID da Categoria ITIL (opcional; se vazio usa secret GLPI_CHANGE_CATEGORY_ID, se existir)"
-        required: false
-        default: ""
+
+permissions:
+  contents: read
 
 jobs:
-  create-gmud:
+  gmud_open_and_validate:
     runs-on: ubuntu-latest
-
+    outputs:
+      change_id: ${{ steps.create_change.outputs.CHANGE_ID }}
     env:
+      # Somente PR = DRY. Push e workflow_dispatch = REAL
+      DRY_RUN: ${{ github.event_name == 'pull_request' }}
+
       GLPI_API_BASE: ${{ secrets.GLPI_API_BASE }}
-      GLPI_APP_TOKEN: ${{ secrets.GLPI_APP_TOKEN }}
-      GLPI_USER_TOKEN: ${{ secrets.GLPI_USER_TOKEN }}
-      GLPI_CHANGE_CATEGORY_ID: ${{ secrets.GLPI_CHANGE_CATEGORY_ID }}
+      APP_TOKEN: ${{ secrets.GLPI_APP_TOKEN }}
+      USER_TOKEN: ${{ secrets.GLPI_USER_TOKEN }}
+      CATEGORY_ID: ${{ secrets.GLPI_CHANGE_CATEGORY_ID }}
+      STATUS_APPROVAL_REQUIRED: "3" # ajuste conforme seu GLPI
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      # 1) Diagnóstico seguro (não imprime URL completa, mas mostra formato e bytes)
-      - name: Debug URL (safe)
+      - name: Ensure jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Compute ref
+        id: ref
         shell: bash
         run: |
           set -euo pipefail
-          echo "::group::GLPI_API_BASE diagnostics (safe)"
-          if [[ -z "${GLPI_API_BASE:-}" ]]; then
-            echo "::error::Secret GLPI_API_BASE não está definida."
-            exit 2
+          if [[ -n "${GITHUB_HEAD_REF:-}" ]]; then
+            echo "ref_name=${GITHUB_HEAD_REF}" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref_name=${GITHUB_REF##*/}" >> "$GITHUB_OUTPUT"
           fi
 
-          echo "Length: ${#GLPI_API_BASE}"
-          printf 'Quoted: %q\n' "$GLPI_API_BASE"
-          echo "Hex bytes:"
-          python - <<'PY'
-import os, binascii
-u=os.environ["GLPI_API_BASE"].encode("utf-8")
-print(binascii.hexlify(u).decode())
-PY
-
-          # Mostra só host (sem path), pra conferir domínio sem expor muito
-          python - <<'PY'
-import os, urllib.parse
-u=os.environ["GLPI_API_BASE"]
-p=urllib.parse.urlparse(u)
-print("Scheme:", p.scheme)
-print("Host:", p.netloc)
-print("Path:", p.path)
-PY
-          echo "::endgroup::"
-
-      # 2) Sanitiza URL e valida formato esperado
-      - name: Normalize & validate GLPI_API_BASE
-        id: norm
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          # Remove CR (\r), remove aspas no começo/fim, remove espaços no fim/início
-          GLPI_API_BASE_CLEAN="$(printf '%s' "$GLPI_API_BASE" \
-            | tr -d '\r' \
-            | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
-            | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//")"
-
-          echo "::group::Normalized GLPI_API_BASE"
-          printf 'Original (quoted): %q\n' "$GLPI_API_BASE"
-          printf 'Cleaned  (quoted): %q\n' "$GLPI_API_BASE_CLEAN"
-          echo "::endgroup::"
-
-          # Validação: tem que ser https://.../apirest.php
-          if [[ ! "$GLPI_API_BASE_CLEAN" =~ ^https://.+/apirest\.php$ ]]; then
-            echo "::error::GLPI_API_BASE inválida. Use exatamente: https://SEU_DOMINIO/apirest.php (sem /front e sem aspas)."
-            echo "::error::Valor recebido (clean): $(printf '%q' "$GLPI_API_BASE_CLEAN")"
-            exit 2
-          fi
-
-          echo "glpi_api_base_clean=$GLPI_API_BASE_CLEAN" >> "$GITHUB_OUTPUT"
-
-      # 3) Verifica secrets mínimas
-      - name: Check required secrets
-        shell: bash
-        run: |
-          set -euo pipefail
-          missing=0
-          for k in GLPI_APP_TOKEN GLPI_USER_TOKEN; do
-            if [[ -z "${!k:-}" ]]; then
-              echo "::error::Secret $k não está definida."
-              missing=1
-            fi
-          done
-          if [[ "$missing" -ne 0 ]]; then
-            exit 2
-          fi
-
-      # 4) Init session (GLPI) com logs detalhados
       - name: Init GLPI session
-        id: init
+        if: env.DRY_RUN != 'true'
+        id: glpi_session
         shell: bash
-        env:
-          GLPI_API_BASE_CLEAN: ${{ steps.norm.outputs.glpi_api_base_clean }}
         run: |
           set -euo pipefail
-          echo "::group::InitSession request"
-          echo "Endpoint: $GLPI_API_BASE_CLEAN/initSession"
-          echo "::endgroup::"
-
-          http_code="$(curl -sS -o glpi_init_session.json -w "%{http_code}" \
+          resp=$(curl -sS -w "\n%{http_code}" -X GET \
             -H "Content-Type: application/json" \
-            -H "App-Token: $GLPI_APP_TOKEN" \
-            -H "Authorization: user_token $GLPI_USER_TOKEN" \
-            "$GLPI_API_BASE_CLEAN/initSession")"
-
-          echo "::group::InitSession response"
-          echo "HTTP: $http_code"
-          cat glpi_init_session.json || true
-          echo "::endgroup::"
-
-          if [[ "$http_code" != "200" ]]; then
-            echo "::error::Falha ao iniciar sessão no GLPI (initSession)."
+            -H "App-Token: ${APP_TOKEN}" \
+            -H "Authorization: user_token ${USER_TOKEN}" \
+            "${GLPI_API_BASE}/initSession")
+          body=$(echo "$resp" | sed '$d'); code=$(echo "$resp" | tail -n1)
+          session=$(echo "$body" | jq -r '.session_token // empty' 2>/dev/null || true)
+          if [[ -z "${session}" ]]; then
+            echo "ERRO initSession (http $code)"
+            echo "$body"
             exit 1
           fi
+          echo "SESSION_TOKEN=${session}" >> "$GITHUB_OUTPUT"
 
-          SESSION_TOKEN="$(python - <<'PY'
-import json
-with open("glpi_init_session.json","r",encoding="utf-8") as f:
-    data=json.load(f)
-print(data.get("session_token",""))
-PY
-)"
-          if [[ -z "$SESSION_TOKEN" ]]; then
-            echo "::error::session_token não veio na resposta do initSession."
-            exit 1
-          fi
-
-          echo "session_token=$SESSION_TOKEN" >> "$GITHUB_OUTPUT"
-
-      # 5) Monta payload e cria Change (GMUD)
-      - name: Create Change (GMUD)
-        id: create
+      - name: Create Change (DRY/REAL)
+        id: create_change
         shell: bash
         env:
-          GLPI_API_BASE_CLEAN: ${{ steps.norm.outputs.glpi_api_base_clean }}
-          SESSION_TOKEN: ${{ steps.init.outputs.session_token }}
+          SESSION_TOKEN: ${{ steps.glpi_session.outputs.SESSION_TOKEN }}
         run: |
           set -euo pipefail
+          REF="${{ steps.ref.outputs.ref_name }}"
+          echo "EVENT_NAME=${GITHUB_EVENT_NAME}"
+          echo "DRY_RUN=${DRY_RUN}"
+          echo "Repo: ${GITHUB_REPOSITORY}"
+          echo "Ref: ${REF}"
 
-          # Categoria: input > secret > vazio
-          ITIL_CAT="${{ inputs.itil_category_id }}"
-          if [[ -z "$ITIL_CAT" ]]; then
-            ITIL_CAT="${GLPI_CHANGE_CATEGORY_ID:-}"
+          if [[ "${DRY_RUN}" == "true" ]]; then
+            echo "Simulando criação de GMUD (sem GLPI)"
+            echo "CHANGE_ID=TEST-${GITHUB_RUN_ID}" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
-          echo "::group::Build payload"
-          python - <<'PY'
-import json, os
-title=os.environ.get("INPUT_TITLE","")
-desc=os.environ.get("INPUT_DESCRIPTION","")
-impact=int(os.environ.get("INPUT_IMPACT","2"))
-urgency=int(os.environ.get("INPUT_URGENCY","2"))
-priority=int(os.environ.get("INPUT_PRIORITY","2"))
+          TITLE="[GMUD][GITHUB] ${GITHUB_REPOSITORY} - ${REF} - ${GITHUB_SHA:0:7}"
+          BODY="GMUD criada automaticamente pelo GitHub Actions. Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
 
-itil_cat=os.environ.get("ITIL_CAT","").strip()
-payload={
-  "input": {
-    "name": title,
-    "content": desc,
-    "impact": impact,
-    "urgency": urgency,
-    "priority": priority,
-  }
-}
-if itil_cat:
-  try:
-    payload["input"]["itilcategories_id"]=int(itil_cat)
-  except:
-    payload["input"]["itilcategories_id"]=itil_cat
+          if [[ -n "${CATEGORY_ID:-}" ]]; then
+            PAYLOAD=$(jq -n \
+              --arg name "$TITLE" \
+              --arg content "$BODY" \
+              --argjson itilcategories_id "${CATEGORY_ID}" \
+              '{input:{name:$name, content:$content, itilcategories_id:$itilcategories_id}}')
+          else
+            PAYLOAD=$(jq -n --arg name "$TITLE" --arg content "$BODY" '{input:{name:$name, content:$content}}')
+          fi
 
-with open("glpi_change_payload.json","w",encoding="utf-8") as f:
-  json.dump(payload,f,ensure_ascii=False,indent=2)
-
-print(json.dumps(payload,ensure_ascii=False,indent=2))
-PY
-          echo "::endgroup::"
-
-        # Inputs do workflow_dispatch viram env automaticamente com prefixo INPUT_
-        env:
-          INPUT_TITLE: ${{ inputs.title }}
-          INPUT_DESCRIPTION: ${{ inputs.description }}
-          INPUT_IMPACT: ${{ inputs.impact }}
-          INPUT_URGENCY: ${{ inputs.urgency }}
-          INPUT_PRIORITY: ${{ inputs.priority }}
-          ITIL_CAT: ${{ inputs.itil_category_id }}
-
-      - name: Call GLPI API - create Change
-        id: call_create
-        shell: bash
-        env:
-          GLPI_API_BASE_CLEAN: ${{ steps.norm.outputs.glpi_api_base_clean }}
-          SESSION_TOKEN: ${{ steps.init.outputs.session_token }}
-        run: |
-          set -euo pipefail
-
-          echo "::group::Create Change request"
-          echo "Endpoint: $GLPI_API_BASE_CLEAN/Change"
-          echo "::endgroup::"
-
-          http_code="$(curl -sS -o glpi_change_create_response.json -w "%{http_code}" \
+          resp=$(curl -sS -w "\n%{http_code}" -X POST \
             -H "Content-Type: application/json" \
-            -H "App-Token: $GLPI_APP_TOKEN" \
-            -H "Session-Token: $SESSION_TOKEN" \
-            -X POST \
-            --data-binary @glpi_change_payload.json \
-            "$GLPI_API_BASE_CLEAN/Change")"
+            -H "Session-Token: ${SESSION_TOKEN}" \
+            -H "App-Token: ${APP_TOKEN}" \
+            -d "${PAYLOAD}" \
+            "${GLPI_API_BASE}/Change")
 
-          echo "::group::Create Change response"
-          echo "HTTP: $http_code"
-          cat glpi_change_create_response.json || true
-          echo "::endgroup::"
+          body=$(echo "$resp" | sed '$d'); code=$(echo "$resp" | tail -n1)
+          CHANGE_ID=$(echo "$body" | jq -r '.id // .ids[0] // empty' 2>/dev/null || true)
 
-          if [[ "$http_code" != "201" && "$http_code" != "200" ]]; then
-            echo "::error::Falha ao criar a GMUD (Change)."
+          if [[ -z "${CHANGE_ID}" ]]; then
+            echo "ERRO create Change (http $code)"
+            echo "$body"
             exit 1
           fi
 
-          CHANGE_ID="$(python - <<'PY'
-import json
-with open("glpi_change_create_response.json","r",encoding="utf-8") as f:
-    data=json.load(f)
-# GLPI costuma retornar {"id":123} ou {"id":"123"}
-cid=data.get("id","")
-print(cid)
-PY
-)"
-          if [[ -z "$CHANGE_ID" ]]; then
-            echo "::error::Não foi possível extrair o ID da GMUD da resposta de criação."
-            exit 1
-          fi
+          echo "CHANGE_ID=${CHANGE_ID}" >> "$GITHUB_OUTPUT"
+          echo "GMUD criada no GLPI. CHANGE_ID=${CHANGE_ID}"
 
-          echo "change_id=$CHANGE_ID" >> "$GITHUB_OUTPUT"
-
-      # 6) Validação automática: confirma via GET /Change/{id} com retries
-      - name: Validate Change exists (GET /Change/{id})
-        id: validate
+      - name: Validation (placeholder)
         shell: bash
-        env:
-          GLPI_API_BASE_CLEAN: ${{ steps.norm.outputs.glpi_api_base_clean }}
-          SESSION_TOKEN: ${{ steps.init.outputs.session_token }}
-          CHANGE_ID: ${{ steps.call_create.outputs.change_id }}
         run: |
           set -euo pipefail
+          echo "Executar testes/build/scans aqui..."
 
-          echo "::group::Validate Change"
-          echo "Validating Change ID: $CHANGE_ID"
-          echo "Endpoint: $GLPI_API_BASE_CLEAN/Change/$CHANGE_ID"
-          echo "::endgroup::"
-
-          ok=0
-          for attempt in 1 2 3; do
-            echo "::group::Attempt $attempt"
-            http_code="$(curl -sS -o glpi_change_get_response.json -w "%{http_code}" \
-              -H "Content-Type: application/json" \
-              -H "App-Token: $GLPI_APP_TOKEN" \
-              -H "Session-Token: $SESSION_TOKEN" \
-              "$GLPI_API_BASE_CLEAN/Change/$CHANGE_ID")"
-
-            echo "HTTP: $http_code"
-            cat glpi_change_get_response.json || true
-            echo "::endgroup::"
-
-            if [[ "$http_code" == "200" ]]; then
-              returned_id="$(python - <<'PY'
-import json
-with open("glpi_change_get_response.json","r",encoding="utf-8") as f:
-    d=json.load(f)
-# Pode ser {"id":123, ...} ou {"id":"123", ...}
-print(str(d.get("id","")))
-PY
-)"
-              if [[ -n "$returned_id" && "$returned_id" == "$CHANGE_ID" ]]; then
-                ok=1
-                break
-              fi
-              echo "::warning::GET retornou 200 mas ID não bate (returned_id=$returned_id)."
-            fi
-
-            sleep $((attempt * 2))
-          done
-
-          if [[ "$ok" -ne 1 ]]; then
-            echo "::error::Validação falhou: não confirmei a existência da GMUD via GET /Change/$CHANGE_ID."
-            exit 1
-          fi
-
-      # 7) Step Summary (bonito no GitHub)
-      - name: Write summary
-        if: always()
+      - name: Kill GLPI session
+        if: always() && env.DRY_RUN != 'true'
         shell: bash
         env:
-          CHANGE_ID: ${{ steps.call_create.outputs.change_id }}
-          GLPI_API_BASE_CLEAN: ${{ steps.norm.outputs.glpi_api_base_clean }}
+          SESSION_TOKEN: ${{ steps.glpi_session.outputs.SESSION_TOKEN }}
         run: |
-          {
-            echo "## ✅ Resultado - GMUD (GLPI)"
-            echo ""
-            if [[ -n "${CHANGE_ID:-}" ]]; then
-              echo "- **Change ID:** \`${CHANGE_ID}\`"
-              echo "- **API Base:** \`${GLPI_API_BASE_CLEAN}\`"
-              echo "- **Consulta:** \`${GLPI_API_BASE_CLEAN}/Change/${CHANGE_ID}\`"
-            else
-              echo "- **Change ID:** (não disponível)"
-            fi
-            echo ""
-            echo "### 📎 Evidências"
-            echo "- Arquivos JSON foram salvos como artifact: **glpi-api-responses**"
-          } >> "$GITHUB_STEP_SUMMARY"
+          set -euo pipefail
+          if [[ -n "${SESSION_TOKEN:-}" ]]; then
+            curl -sS -X GET \
+              -H "Session-Token: ${SESSION_TOKEN}" \
+              -H "App-Token: ${APP_TOKEN}" \
+              "${GLPI_API_BASE}/killSession" >/dev/null || true
+          fi
 
-      # 8) Upload evidências como artifact (sempre)
-      - name: Upload API responses (artifact)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: glpi-api-responses
-          path: |
-            glpi_init_session.json
-            glpi_change_payload.json
-            glpi_change_create_response.json
-            glpi_change_get_response.json
-          if-no-files-found: ignore
+  deploy_with_approval:
+    needs: [gmud_open_and_validate]
+    runs-on: ubuntu-latest
+    environment: production
+
+    # ✅ bloqueia deploy se for PR (DRY)
+    if: github.event_name != 'pull_request'
+
+    env:
+      DRY_RUN: ${{ github.event_name == 'pull_request' }}
+      CHANGE_ID: ${{ needs.gmud_open_and_validate.outputs.change_id }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy (placeholder)
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "EVENT_NAME=${GITHUB_EVENT_NAME}"
+          echo "DRY_RUN=${DRY_RUN}"
+          echo "CHANGE_ID=${CHANGE_ID}"
+          echo "Execute seu deploy aqui..."
