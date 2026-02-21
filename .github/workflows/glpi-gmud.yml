@@ -10,8 +10,7 @@ permissions:
 
 jobs:
   gmud:
-    # AJUSTE AQUI: use labels que EXISTEM no runner correto
-    runs-on: [self-hosted, glpi, lan]
+    runs-on: [self-hosted, Linux, X64]
 
     env:
       GLPI_API_BASE: ${{ secrets.GLPI_API_BASE }}
@@ -22,24 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Prova de runner + rede
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "RUNNER_NAME=$RUNNER_NAME"
-          hostname || true
-          ip a || true
-          ip r || true
-          echo "Teste porta 80 no GLPI (192.168.0.44):"
-          nc -vz -w 5 192.168.0.44 80
-
-      - name: Mostrar GLPI_API_BASE
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "GLPI_API_BASE=${GLPI_API_BASE}"
-
-      - name: Init GLPI Session (timeout curto)
+      - name: Init GLPI Session
         id: session
         shell: bash
         run: |
@@ -56,13 +38,71 @@ jobs:
           code="$(echo "$resp" | tail -n1)"
 
           echo "HTTP: $code"
-          echo "Body: $body"
 
           session="$(echo "$body" | jq -r '.session_token // empty' 2>/dev/null || true)"
 
           if [[ -z "$session" ]]; then
-            echo "ERRO initSession"
+            echo "Erro ao iniciar sessão:"
+            echo "$body"
             exit 1
           fi
 
           echo "SESSION_TOKEN=$session" >> "$GITHUB_OUTPUT"
+
+      - name: Create Change in GLPI
+        id: change
+        shell: bash
+        env:
+          SESSION_TOKEN: ${{ steps.session.outputs.SESSION_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          TITLE="[GMUD] ${GITHUB_REPOSITORY} - ${GITHUB_SHA:0:7}"
+          BODY="Criado automaticamente pelo GitHub Actions"
+
+          PAYLOAD=$(jq -n \
+            --arg name "$TITLE" \
+            --arg content "$BODY" \
+            --argjson itilcategories_id "${CATEGORY_ID}" \
+            '{input:{name:$name, content:$content, itilcategories_id:$itilcategories_id}}')
+
+          resp=$(curl -sS --connect-timeout 5 --max-time 15 -w "\n%{http_code}" \
+            -X POST \
+            -H "Content-Type: application/json" \
+            -H "Session-Token: ${SESSION_TOKEN}" \
+            -H "App-Token: ${APP_TOKEN}" \
+            -d "${PAYLOAD}" \
+            "${GLPI_API_BASE%/}/Change")
+
+          body="$(echo "$resp" | sed '$d')"
+          code="$(echo "$resp" | tail -n1)"
+
+          echo "HTTP: $code"
+
+          change_id="$(echo "$body" | jq -r '.id // empty' 2>/dev/null || true)"
+
+          if [[ -z "$change_id" ]]; then
+            echo "Erro ao criar Change:"
+            echo "$body"
+            exit 1
+          fi
+
+          echo "Change criado com ID: $change_id"
+
+      - name: Kill GLPI Session
+        if: always()
+        shell: bash
+        env:
+          SESSION_TOKEN: ${{ steps.session.outputs.SESSION_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${SESSION_TOKEN:-}" ]]; then
+            exit 0
+          fi
+
+          curl -sS --connect-timeout 5 --max-time 10 \
+            -X GET \
+            -H "Session-Token: ${SESSION_TOKEN}" \
+            -H "App-Token: ${APP_TOKEN}" \
+            "${GLPI_API_BASE%/}/killSession" >/dev/null || true
