@@ -15,7 +15,6 @@ on:
 jobs:
   create-gmud:
     runs-on: self-hosted
-
     steps:
       - name: Criar GMUD no GLPI
         shell: bash
@@ -29,17 +28,14 @@ jobs:
         run: |
           set -euo pipefail
 
-          # 1) validar secrets
-          if [[ -z "${GLPI_API_BASE:-}" ]]; then echo "::error::Falta secret GLPI_API_BASE"; exit 2; fi
-          if [[ -z "${GLPI_LOGIN:-}" ]]; then echo "::error::Falta secret GLPI_LOGIN"; exit 2; fi
-          if [[ -z "${GLPI_PASSWORD:-}" ]]; then echo "::error::Falta secret GLPI_PASSWORD"; exit 2; fi
-          if [[ -z "${GLPI_APP_TOKEN:-}" ]]; then echo "::error::Falta secret GLPI_APP_TOKEN"; exit 2; fi
+          BASE="$(printf '%s' "${GLPI_API_BASE:-}" | tr -d '\r' | sed -e 's/[[:space:]]*$//')"
+          [[ -n "$BASE" ]] || { echo "::error::Falta GLPI_API_BASE"; exit 2; }
+          [[ -n "${GLPI_APP_TOKEN:-}" ]] || { echo "::error::Falta GLPI_APP_TOKEN"; exit 2; }
+          [[ -n "${GLPI_LOGIN:-}" ]] || { echo "::error::Falta GLPI_LOGIN"; exit 2; }
+          [[ -n "${GLPI_PASSWORD:-}" ]] || { echo "::error::Falta GLPI_PASSWORD"; exit 2; }
 
-          # 2) normalizar URL (remove \r e espaços)
-          BASE="$(printf '%s' "$GLPI_API_BASE" | tr -d '\r' | sed -e 's/[[:space:]]*$//')"
-
-          # 3) initSession (Basic Auth)
           BASIC="$(printf '%s:%s' "$GLPI_LOGIN" "$GLPI_PASSWORD" | base64 -w0)"
+
           code="$(curl -sS -o init.json -w "%{http_code}" \
             -H "Content-Type: application/json" \
             -H "App-Token: $GLPI_APP_TOKEN" \
@@ -56,7 +52,6 @@ PY
 )"
           [[ -n "$token" ]] || { echo "::error::Sem session_token"; exit 1; }
 
-          # 4) criar payload
           python - <<'PY'
 import json, os
 payload={"input":{
@@ -70,7 +65,6 @@ json.dump(payload, open("payload.json","w",encoding="utf-8"), ensure_ascii=False
 print(json.dumps(payload, ensure_ascii=False, indent=2))
 PY
 
-          # 5) criar Change
           code="$(curl -sS -o create.json -w "%{http_code}" \
             -H "Content-Type: application/json" \
             -H "App-Token: $GLPI_APP_TOKEN" \
@@ -86,10 +80,8 @@ import json
 print(json.load(open("create.json",encoding="utf-8")).get("id",""))
 PY
 )"
-          echo "Change ID: $id"
-          echo "✅ GMUD criada no GLPI com ID: $id" >> "$GITHUB_STEP_SUMMARY"
+          echo "✅ GMUD criada com ID: $id" >> "$GITHUB_STEP_SUMMARY"
 
-          # 6) killSession (sempre tenta)
           curl -sS -o /dev/null \
             -H "Content-Type: application/json" \
             -H "App-Token: $GLPI_APP_TOKEN" \
