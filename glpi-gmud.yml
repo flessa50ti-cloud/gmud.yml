@@ -28,7 +28,6 @@ jobs:
           echo "Runner Name: $RUNNER_NAME"
           echo "Runner OS: $RUNNER_OS"
           uname -a || true
-          echo "GLPI_API_BASE (secret): ${GLPI_API_BASE:-<empty>}"
 
       - name: Normalize GLPI API URL
         id: base
@@ -36,9 +35,6 @@ jobs:
         run: |
           set -euo pipefail
           base="${GLPI_API_BASE%/}"
-          if [[ "$base" != *"/apirest.php" ]]; then
-            base="${base}/apirest.php"
-          fi
           echo "GLPI_BASE=$base" >> "$GITHUB_OUTPUT"
           echo "Using GLPI_BASE=$base"
 
@@ -48,11 +44,10 @@ jobs:
           GLPI_BASE: ${{ steps.base.outputs.GLPI_BASE }}
         run: |
           set -euo pipefail
-          echo "Testing access to GLPI endpoint..."
-          # testa /apirest.php (mais relevante do que /)
+          echo "Testing GLPI API..."
           curl -sS -o /dev/null -w "HTTP %{http_code}\n" \
             --connect-timeout 5 --max-time 10 \
-            "${GLPI_BASE}/" || exit 1
+            "${GLPI_BASE}/initSession" || true
 
       - name: Install jq if needed
         shell: bash
@@ -63,7 +58,7 @@ jobs:
             exit 0
           fi
 
-          echo "jq not found. Installing..."
+          echo "Installing jq..."
           if command -v apt-get >/dev/null 2>&1; then
             sudo apt-get update
             sudo apt-get install -y jq
@@ -72,7 +67,7 @@ jobs:
           elif command -v yum >/dev/null 2>&1; then
             sudo yum install -y jq
           else
-            echo "No supported package manager found (apt/dnf/yum). Install jq manually on the runner."
+            echo "No supported package manager found."
             exit 1
           fi
 
@@ -99,7 +94,7 @@ jobs:
           session="$(echo "$body" | jq -r '.session_token // empty' 2>/dev/null || true)"
 
           if [[ -z "$session" ]]; then
-            echo "Erro ao iniciar sessão (GLPI initSession). Resposta:"
+            echo "Erro ao iniciar sessão:"
             echo "$body"
             exit 1
           fi
@@ -140,7 +135,7 @@ jobs:
           change_id="$(echo "$body" | jq -r '.id // empty' 2>/dev/null || true)"
 
           if [[ -z "$change_id" ]]; then
-            echo "Erro ao criar Change. Resposta:"
+            echo "Erro ao criar Change:"
             echo "$body"
             exit 1
           fi
@@ -156,8 +151,9 @@ jobs:
           SESSION_TOKEN: ${{ steps.session.outputs.SESSION_TOKEN }}
         run: |
           set -euo pipefail
+
           if [[ -z "${SESSION_TOKEN:-}" ]]; then
-            echo "Sem SESSION_TOKEN para matar sessão (provavelmente initSession falhou)."
+            echo "Sem SESSION_TOKEN."
             exit 0
           fi
 
