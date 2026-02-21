@@ -1,89 +1,11 @@
-name: GLPI - Criar GMUD (simples)
+name: TESTE YAML
 
 on:
   workflow_dispatch:
-    inputs:
-      title:
-        description: "Título"
-        required: true
-        default: "GMUD - Deploy"
-      description:
-        description: "Descrição"
-        required: true
-        default: "Mudança criada automaticamente via GitHub Actions."
 
 jobs:
-  create-gmud:
-    runs-on: self-hosted
+  test:
+    runs-on: ubuntu-latest
     steps:
-      - name: Criar GMUD no GLPI
-        shell: bash
-        env:
-          GLPI_API_BASE: ${{ secrets.GLPI_API_BASE }}
-          GLPI_APP_TOKEN: ${{ secrets.GLPI_APP_TOKEN }}
-          GLPI_LOGIN: ${{ secrets.GLPI_LOGIN }}
-          GLPI_PASSWORD: ${{ secrets.GLPI_PASSWORD }}
-          TITLE: ${{ inputs.title }}
-          DESC: ${{ inputs.description }}
-        run: |
-          set -euo pipefail
-
-          BASE="$(printf '%s' "${GLPI_API_BASE:-}" | tr -d '\r' | sed -e 's/[[:space:]]*$//')"
-          [[ -n "$BASE" ]] || { echo "::error::Falta GLPI_API_BASE"; exit 2; }
-          [[ -n "${GLPI_APP_TOKEN:-}" ]] || { echo "::error::Falta GLPI_APP_TOKEN"; exit 2; }
-          [[ -n "${GLPI_LOGIN:-}" ]] || { echo "::error::Falta GLPI_LOGIN"; exit 2; }
-          [[ -n "${GLPI_PASSWORD:-}" ]] || { echo "::error::Falta GLPI_PASSWORD"; exit 2; }
-
-          BASIC="$(printf '%s:%s' "$GLPI_LOGIN" "$GLPI_PASSWORD" | base64 -w0)"
-
-          code="$(curl -sS -o init.json -w "%{http_code}" \
-            -H "Content-Type: application/json" \
-            -H "App-Token: $GLPI_APP_TOKEN" \
-            -H "Authorization: Basic $BASIC" \
-            "$BASE/initSession")"
-          echo "initSession HTTP=$code"
-          cat init.json || true
-          [[ "$code" == "200" ]] || { echo "::error::Falhou initSession"; exit 1; }
-
-          token="$(python - <<'PY'
-import json
-print(json.load(open("init.json",encoding="utf-8")).get("session_token",""))
-PY
-)"
-          [[ -n "$token" ]] || { echo "::error::Sem session_token"; exit 1; }
-
-          python - <<'PY'
-import json, os
-payload={"input":{
-  "name": os.environ["TITLE"],
-  "content": os.environ["DESC"],
-  "impact": 2,
-  "urgency": 2,
-  "priority": 2
-}}
-json.dump(payload, open("payload.json","w",encoding="utf-8"), ensure_ascii=False)
-print(json.dumps(payload, ensure_ascii=False, indent=2))
-PY
-
-          code="$(curl -sS -o create.json -w "%{http_code}" \
-            -H "Content-Type: application/json" \
-            -H "App-Token: $GLPI_APP_TOKEN" \
-            -H "Session-Token: $token" \
-            -X POST --data-binary @payload.json \
-            "$BASE/Change")"
-          echo "Create Change HTTP=$code"
-          cat create.json || true
-          [[ "$code" == "200" || "$code" == "201" ]] || { echo "::error::Falhou criar Change"; exit 1; }
-
-          id="$(python - <<'PY'
-import json
-print(json.load(open("create.json",encoding="utf-8")).get("id",""))
-PY
-)"
-          echo "✅ GMUD criada com ID: $id" >> "$GITHUB_STEP_SUMMARY"
-
-          curl -sS -o /dev/null \
-            -H "Content-Type: application/json" \
-            -H "App-Token: $GLPI_APP_TOKEN" \
-            -H "Session-Token: $token" \
-            "$BASE/killSession" || true
+      - name: OK
+        run: echo "YAML OK"
