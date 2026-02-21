@@ -27,7 +27,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          resp=$(curl -sS --connect-timeout 5 --max-time 15 -w "\n%{http_code}" \
+          resp=$(curl -sS --connect-timeout 5 --max-time 20 -w "\n%{http_code}" \
             -X GET \
             -H "Content-Type: application/json" \
             -H "App-Token: ${APP_TOKEN}" \
@@ -66,7 +66,7 @@ jobs:
             --argjson itilcategories_id "${CATEGORY_ID}" \
             '{input:{name:$name, content:$content, itilcategories_id:$itilcategories_id}}')
 
-          resp=$(curl -sS --connect-timeout 5 --max-time 15 -w "\n%{http_code}" \
+          resp=$(curl -sS --connect-timeout 5 --max-time 20 -w "\n%{http_code}" \
             -X POST \
             -H "Content-Type: application/json" \
             -H "Session-Token: ${SESSION_TOKEN}" \
