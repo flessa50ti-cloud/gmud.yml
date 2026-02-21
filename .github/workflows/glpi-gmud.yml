@@ -95,22 +95,23 @@ jobs:
           URGENCY: ${{ inputs.urgency }}
           PRIORITY: ${{ inputs.priority }}
           ITIL_INPUT: ${{ inputs.itil_category_id }}
+          ITIL_SECRET: ${{ secrets.GLPI_CHANGE_CATEGORY_ID }}
         run: |
           set -euo pipefail
 
-          ITIL="$ITIL_INPUT"
+          ITIL="${ITIL_INPUT:-}"
           if [[ -z "$ITIL" ]]; then
-            ITIL="${GLPI_CHANGE_CATEGORY_ID:-}"
+            ITIL="${ITIL_SECRET:-}"
           fi
+          export ITIL
 
-          python3 -c '
-import json, os
+          python3 -c 'import json, os
 payload={"input":{
   "name": os.environ["TITLE"],
   "content": os.environ["DESC"],
   "impact": int(os.environ["IMPACT"]),
   "urgency": int(os.environ["URGENCY"]),
-  "priority": int(os.environ["PRIORITY"]),
+  "priority": int(os.environ["PRIORITY"])
 }}
 itil=os.environ.get("ITIL","").strip()
 if itil:
@@ -120,7 +121,7 @@ if itil:
     payload["input"]["itilcategories_id"]=itil
 json.dump(payload, open("glpi_change_payload.json","w",encoding="utf-8"), ensure_ascii=False, indent=2)
 print(json.dumps(payload, ensure_ascii=False, indent=2))
-' ITIL="$ITIL"
+'
 
       - name: Create Change (GMUD)
         id: create
