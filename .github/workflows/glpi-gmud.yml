@@ -24,7 +24,7 @@ on:
         required: true
         default: "2"
       itil_category_id:
-        description: "ID da Categoria ITIL (opcional; se vazio usa secret GLPI_CHANGE_CATEGORY_ID, se existir)"
+        description: "ID da Categoria ITIL (opcional; se vazio usa secret GLPI_CHANGE_CATEGORY_ID)"
         required: false
         default: ""
 
@@ -51,9 +51,9 @@ jobs:
           python - <<'PY'
 import os, urllib.parse
 
-u=os.environ.get("GLPI_API_BASE","")
+u = os.environ.get("GLPI_API_BASE", "")
 print("raw:", repr(u))
-p=urllib.parse.urlparse(u)
+p = urllib.parse.urlparse(u)
 print("host:", p.netloc)
 print("path:", p.path)
 PY
@@ -68,10 +68,12 @@ PY
             | tr -d '\r' \
             | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
             | sed -e 's/^"//' -e 's/"$//')"
+
           if [[ ! "$GLPI_API_BASE_CLEAN" =~ ^http ]]; then
             echo "::error::GLPI_API_BASE inválida. Ex: http://127.0.0.1/glpi/apirest.php"
             exit 2
           fi
+
           echo "glpi_api_base_clean=$GLPI_API_BASE_CLEAN" >> "$GITHUB_OUTPUT"
 
       - name: Init GLPI session (Basic Auth)
@@ -81,15 +83,14 @@ PY
           GLPI_API_BASE_CLEAN: ${{ steps.norm.outputs.glpi_api_base_clean }}
         run: |
           set -euo pipefail
+
           if [[ -z "${GLPI_LOGIN:-}" || -z "${GLPI_PASSWORD:-}" ]]; then
             echo "::error::Secrets GLPI_LOGIN e/ou GLPI_PASSWORD não configuradas."
             exit 2
           fi
+
           BASIC="$(printf '%s:%s' "$GLPI_LOGIN" "$GLPI_PASSWORD" | base64 -w0)"
-          echo "::group::InitSession request"
-          echo "Endpoint: $GLPI_API_BASE_CLEAN/initSession"
-          echo "Using App-Token: $([[ -n "${GLPI_APP_TOKEN:-}" ]] && echo yes || echo no)"
-          echo "::endgroup::"
+
           if [[ -n "${GLPI_APP_TOKEN:-}" ]]; then
             http_code="$(curl -sS -o glpi_init_session.json -w "%{http_code}" \
               -H "Content-Type: application/json" \
@@ -102,14 +103,15 @@ PY
               -H "Authorization: Basic $BASIC" \
               "$GLPI_API_BASE_CLEAN/initSession")"
           fi
-          echo "::group::InitSession response"
+
           echo "HTTP: $http_code"
           cat glpi_init_session.json || true
-          echo "::endgroup::"
+
           if [[ "$http_code" != "200" ]]; then
             echo "::error::Falha ao iniciar sessão no GLPI."
             exit 1
           fi
+
           SESSION_TOKEN="$(python - <<'PY'
 import json
 with open("glpi_init_session.json","r",encoding="utf-8") as f:
@@ -117,10 +119,12 @@ with open("glpi_init_session.json","r",encoding="utf-8") as f:
 print(data.get("session_token",""))
 PY
 )"
+
           if [[ -z "$SESSION_TOKEN" ]]; then
             echo "::error::session_token não veio na resposta."
             exit 1
           fi
+
           echo "session_token=$SESSION_TOKEN" >> "$GITHUB_OUTPUT"
 
       - name: Build payload
@@ -129,30 +133,30 @@ PY
         run: |
           set -euo pipefail
           ITIL_CAT="${{ inputs.itil_category_id }}"
+
           if [[ -z "$ITIL_CAT" ]]; then
             ITIL_CAT="${GLPI_CHANGE_CATEGORY_ID:-}"
           fi
+
           python - <<'PY'
 import json, os
-title=os.environ["TITLE"]
-desc=os.environ["DESC"]
-impact=int(os.environ["IMPACT"])
-urgency=int(os.environ["URGENCY"])
-priority=int(os.environ["PRIORITY"])
-itil=os.environ.get("ITIL_CAT","").strip()
 
-payload={"input":{
-  "name": title,
-  "content": desc,
-  "impact": impact,
-  "urgency": urgency,
-  "priority": priority
-}}
+payload = {
+  "input": {
+    "name": os.environ["TITLE"],
+    "content": os.environ["DESC"],
+    "impact": int(os.environ["IMPACT"]),
+    "urgency": int(os.environ["URGENCY"]),
+    "priority": int(os.environ["PRIORITY"])
+  }
+}
+
+itil = os.environ.get("ITIL_CAT", "").strip()
 if itil:
   try:
-    payload["input"]["itilcategories_id"]=int(itil)
+    payload["input"]["itilcategories_id"] = int(itil)
   except:
-    payload["input"]["itilcategories_id"]=itil
+    payload["input"]["itilcategories_id"] = itil
 
 with open("glpi_change_payload.json","w",encoding="utf-8") as f:
   json.dump(payload,f,ensure_ascii=False,indent=2)
@@ -175,9 +179,7 @@ PY
           SESSION_TOKEN: ${{ steps.init.outputs.session_token }}
         run: |
           set -euo pipefail
-          echo "::group::Create Change request"
-          echo "Endpoint: $GLPI_API_BASE_CLEAN/Change"
-          echo "::endgroup::"
+
           if [[ -n "${GLPI_APP_TOKEN:-}" ]]; then
             http_code="$(curl -sS -o glpi_change_create_response.json -w "%{http_code}" \
               -H "Content-Type: application/json" \
@@ -192,14 +194,15 @@ PY
               -X POST --data-binary @glpi_change_payload.json \
               "$GLPI_API_BASE_CLEAN/Change")"
           fi
-          echo "::group::Create Change response"
+
           echo "HTTP: $http_code"
           cat glpi_change_create_response.json || true
-          echo "::endgroup::"
+
           if [[ "$http_code" != "201" && "$http_code" != "200" ]]; then
-            echo "::error::Falha ao criar a GMUD (Change)."
+            echo "::error::Falha ao criar a GMUD."
             exit 1
           fi
+
           CHANGE_ID="$(python - <<'PY'
 import json
 with open("glpi_change_create_response.json","r",encoding="utf-8") as f:
@@ -207,59 +210,13 @@ with open("glpi_change_create_response.json","r",encoding="utf-8") as f:
 print(data.get("id",""))
 PY
 )"
+
           if [[ -z "$CHANGE_ID" ]]; then
-            echo "::error::Não foi possível extrair o ID da GMUD."
+            echo "::error::Não foi possível extrair o ID."
             exit 1
           fi
+
           echo "change_id=$CHANGE_ID" >> "$GITHUB_OUTPUT"
-
-      - name: Validate Change exists
-        id: validate
-        shell: bash
-        env:
-          GLPI_API_BASE_CLEAN: ${{ steps.norm.outputs.glpi_api_base_clean }}
-          SESSION_TOKEN: ${{ steps.init.outputs.session_token }}
-          CHANGE_ID: ${{ steps.create.outputs.change_id }}
-        run: |
-          set -euo pipefail
-          ok=0
-          for attempt in 1 2 3; do
-            echo "::group::Validate attempt $attempt"
-            if [[ -n "${GLPI_APP_TOKEN:-}" ]]; then
-              http_code="$(curl -sS -o glpi_change_get_response.json -w "%{http_code}" \
-                -H "Content-Type: application/json" \
-                -H "App-Token: $GLPI_APP_TOKEN" \
-                -H "Session-Token: $SESSION_TOKEN" \
-                "$GLPI_API_BASE_CLEAN/Change/$CHANGE_ID")"
-            else
-              http_code="$(curl -sS -o glpi_change_get_response.json -w "%{http_code}" \
-                -H "Content-Type: application/json" \
-                -H "Session-Token: $SESSION_TOKEN" \
-                "$GLPI_API_BASE_CLEAN/Change/$CHANGE_ID")"
-            fi
-            echo "HTTP: $http_code"
-            cat glpi_change_get_response.json || true
-            echo "::endgroup::"
-            if [[ "$http_code" == "200" ]]; then
-              returned_id="$(python - <<'PY'
-import json
-with open("glpi_change_get_response.json","r",encoding="utf-8") as f:
-    d=json.load(f)
-print(str(d.get("id","")))
-PY
-)"
-              if [[ "$returned_id" == "$CHANGE_ID" ]]; then
-                ok=1
-                break
-              fi
-            fi
-            sleep $((attempt * 2))
-          done
-
-          if [[ "$ok" -ne 1 ]]; then
-            echo "::error::Validação falhou: não confirmei a GMUD via GET."
-            exit 1
-          fi
 
       - name: Kill session
         if: always()
@@ -272,47 +229,15 @@ PY
           if [[ -z "${SESSION_TOKEN:-}" ]]; then
             exit 0
           fi
+
           if [[ -n "${GLPI_APP_TOKEN:-}" ]]; then
-            curl -sS -o /dev/null -w "killSession HTTP:%{http_code}\n" \
+            curl -sS -o /dev/null \
               -H "Content-Type: application/json" \
               -H "App-Token: $GLPI_APP_TOKEN" \
               -H "Session-Token: $SESSION_TOKEN" \
               "$GLPI_API_BASE_CLEAN/killSession" || true
           else
-            curl -sS -o /dev/null -w "killSession HTTP:%{http_code}\n" \
+            curl -sS -o /dev/null \
               -H "Content-Type: application/json" \
               -H "Session-Token: $SESSION_TOKEN" \
               "$GLPI_API_BASE_CLEAN/killSession" || true
-
-      - name: Write summary
-        if: always()
-        shell: bash
-        env:
-          CHANGE_ID: ${{ steps.create.outputs.change_id }}
-          GLPI_API_BASE_CLEAN: ${{ steps.norm.outputs.glpi_api_base_clean }}
-        run: |
-          {
-            echo "## Resultado - GMUD (GLPI)"
-            echo ""
-            if [[ -n "${CHANGE_ID:-}" ]]; then
-              echo "- **Change ID:** \`${CHANGE_ID}\`"
-              echo "- **API Base:** \`${GLPI_API_BASE_CLEAN}\`"
-              echo "- **GET:** \`${GLPI_API_BASE_CLEAN}/Change/${CHANGE_ID}\`"
-            else
-              echo "- **Change ID:** (não disponível)"
-            fi
-            echo ""
-            echo "Artifacts: **glpi-api-responses**"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload API responses (artifact)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: glpi-api-responses
-          path: |
-            glpi_init_session.json
-            glpi_change_payload.json
-            glpi_change_create_response.json
-            glpi_change_get_response.json
-          if-no-files-found: ignore
