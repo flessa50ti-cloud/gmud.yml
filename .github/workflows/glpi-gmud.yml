@@ -27,27 +27,29 @@ jobs:
         run: |
           set -euo pipefail
 
-          resp=$(curl -sS --connect-timeout 5 --max-time 20 -w "\n%{http_code}" \
+          echo "Iniciando sessão no GLPI..."
+
+          RESPONSE=$(curl -sS --connect-timeout 5 --max-time 20 -w "\n%{http_code}" \
             -X GET \
             -H "Content-Type: application/json" \
             -H "App-Token: ${APP_TOKEN}" \
             -H "Authorization: user_token ${USER_TOKEN}" \
             "${GLPI_API_BASE%/}/initSession")
 
-          body="$(echo "$resp" | sed '$d')"
-          code="$(echo "$resp" | tail -n1)"
+          BODY=$(echo "$RESPONSE" | sed '$d')
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
 
-          echo "HTTP: $code"
+          echo "HTTP: $HTTP_CODE"
 
-          session="$(echo "$body" | jq -r '.session_token // empty' 2>/dev/null || true)"
+          SESSION_TOKEN=$(echo "$BODY" | jq -r '.session_token // empty' 2>/dev/null || true)
 
-          if [[ -z "$session" ]]; then
+          if [[ -z "$SESSION_TOKEN" ]]; then
             echo "Erro ao iniciar sessão:"
-            echo "$body"
+            echo "$BODY"
             exit 1
           fi
 
-          echo "SESSION_TOKEN=$session" >> "$GITHUB_OUTPUT"
+          echo "SESSION_TOKEN=$SESSION_TOKEN" >> "$GITHUB_OUTPUT"
 
       - name: Create Change in GLPI
         id: change
@@ -57,8 +59,10 @@ jobs:
         run: |
           set -euo pipefail
 
+          echo "Criando Change no GLPI..."
+
           TITLE="[GMUD] ${GITHUB_REPOSITORY} - ${GITHUB_SHA:0:7}"
-          BODY="Criado automaticamente pelo GitHub Actions"
+          BODY="Mudança criada automaticamente via GitHub Actions"
 
           PAYLOAD=$(jq -n \
             --arg name "$TITLE" \
@@ -66,7 +70,7 @@ jobs:
             --argjson itilcategories_id "${CATEGORY_ID}" \
             '{input:{name:$name, content:$content, itilcategories_id:$itilcategories_id}}')
 
-          resp=$(curl -sS --connect-timeout 5 --max-time 20 -w "\n%{http_code}" \
+          RESPONSE=$(curl -sS --connect-timeout 5 --max-time 20 -w "\n%{http_code}" \
             -X POST \
             -H "Content-Type: application/json" \
             -H "Session-Token: ${SESSION_TOKEN}" \
@@ -74,20 +78,20 @@ jobs:
             -d "${PAYLOAD}" \
             "${GLPI_API_BASE%/}/Change")
 
-          body="$(echo "$resp" | sed '$d')"
-          code="$(echo "$resp" | tail -n1)"
+          BODY=$(echo "$RESPONSE" | sed '$d')
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
 
-          echo "HTTP: $code"
+          echo "HTTP: $HTTP_CODE"
 
-          change_id="$(echo "$body" | jq -r '.id // empty' 2>/dev/null || true)"
+          CHANGE_ID=$(echo "$BODY" | jq -r '.id // empty' 2>/dev/null || true)
 
-          if [[ -z "$change_id" ]]; then
+          if [[ -z "$CHANGE_ID" ]]; then
             echo "Erro ao criar Change:"
-            echo "$body"
+            echo "$BODY"
             exit 1
           fi
 
-          echo "Change criado com ID: $change_id"
+          echo "Change criado com ID: $CHANGE_ID"
 
       - name: Kill GLPI Session
         if: always()
@@ -100,6 +104,8 @@ jobs:
           if [[ -z "${SESSION_TOKEN:-}" ]]; then
             exit 0
           fi
+
+          echo "Encerrando sessão no GLPI..."
 
           curl -sS --connect-timeout 5 --max-time 10 \
             -X GET \
