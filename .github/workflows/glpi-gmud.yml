@@ -42,7 +42,8 @@ jobs:
             exit 1
           fi
 
-          SESSION_TOKEN=$(python3 -c "import json; print(json.load(open('init.json')).get('session_token',''))")
+          SESSION_TOKEN=$(python3 -c "import json; print(json.load(open('init.json')).get('session_token',''))" 2>/dev/null || true)
+
           if [ -z "$SESSION_TOKEN" ]; then
             echo "session_token vazio"
             exit 1
@@ -66,13 +67,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Conteúdo simples + rastreabilidade básica (sem quebrar YAML)
-          content="Deploy automático - PRODUÇÃO\nRepo: $REPO\nRef: $REF\nCommit: $SHA\nAtor: $ACTOR\nRun: $RUN_URL\n"
+          # Conteúdo em UMA linha para não quebrar JSON
+          CONTENT="Deploy automático (PRODUÇÃO) | Repo=$REPO | Ref=$REF | SHA=$SHA | Ator=$ACTOR | Run=$RUN_URL"
 
-          # Gera payload com Python bem curto (evita problemas com aspas/newlines)
-          python3 -c "import json; \
-payload={'input': {'name': 'GMUD via GitHub Actions', 'content': '''$content''', 'status': 1}}; \
-json.dump(payload, open('payload.json','w',encoding='utf-8'), ensure_ascii=False)"
+          # Cria payload.json sem heredoc e sem multilinha
+          python3 -c "import json,os; json.dump({'input':{'name':'GMUD via GitHub Actions','content':os.environ['CONTENT'],'status':1}}, open('payload.json','w',encoding='utf-8'), ensure_ascii=False)"
 
           http_code=$(curl --connect-timeout 5 --max-time 30 -sS -o response.json -w "%{http_code}" \
             -H "Content-Type: application/json" \
@@ -89,7 +88,14 @@ json.dump(payload, open('payload.json','w',encoding='utf-8'), ensure_ascii=False
             exit 1
           fi
 
-          CHANGE_ID=$(python3 -c "import json; print(json.load(open('response.json')).get('id',''))" 2>/dev/null || true)
+          # Extrai ID de forma simples (funciona com {"id":123} ou {"id":"123"})
+          CHANGE_ID=$(sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\?\([0-9]\+\)"\?.*/\1/p' response.json | head -n1)
+
+          if [ -z "$CHANGE_ID" ]; then
+            echo "Não consegui extrair o ID do Change"
+            exit 1
+          fi
+
           echo "CHANGE_ID=$CHANGE_ID"
           echo "change_id=$CHANGE_ID" >> "$GITHUB_OUTPUT"
 
