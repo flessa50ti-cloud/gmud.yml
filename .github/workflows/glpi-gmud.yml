@@ -32,6 +32,7 @@ jobs:
       - name: Debug runner
         shell: bash
         run: |
+          set -e
           echo "HOSTNAME=$(hostname)"
           ip -br a || true
 
@@ -78,39 +79,29 @@ jobs:
           SESSION_TOKEN: ${{ steps.init_session.outputs.session_token }}
           TITLE: ${{ inputs.title }}
           DESC: ${{ inputs.description }}
-          GITHUB_SERVER_URL: ${{ github.server_url }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          GITHUB_RUN_ID: ${{ github.run_id }}
-          GITHUB_SHA: ${{ github.sha }}
-          GITHUB_REF_NAME: ${{ github.ref_name }}
-          GITHUB_ACTOR: ${{ github.actor }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REPO: ${{ github.repository }}
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+          ACTOR: ${{ github.actor }}
         run: |
           set -euo pipefail
 
-          RUN_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-
-          python3 - <<'PY'
-import json, os
-title = os.getenv("TITLE") or "GMUD via GitHub Actions"
-desc  = os.getenv("DESC")  or "Deploy automático"
-content = (
-  f"{desc}\n\n"
-  "=== Rastreabilidade ===\n"
-  f"Repo: {os.environ.get('GITHUB_REPOSITORY','')}\n"
-  f"Ref: {os.environ.get('GITHUB_REF_NAME','')}\n"
-  f"Commit: {os.environ.get('GITHUB_SHA','')}\n"
-  f"Ator: {os.environ.get('GITHUB_ACTOR','')}\n"
-  f"Run: {os.environ.get('RUN_URL','')}\n"
-)
-payload = {"input": {"name": title, "content": content, "status": 1}}
-with open("payload.json","w",encoding="utf-8") as f:
-  json.dump(payload, f, ensure_ascii=False)
-PY
-
+          # Gera payload.json com Python (sem heredoc) para evitar erro de YAML
+          python3 -c "import json,os; \
+title=os.getenv('TITLE') or 'GMUD via GitHub Actions'; \
+desc=os.getenv('DESC') or 'Deploy automático'; \
+content=(f\"{desc}\\n\\n=== Rastreabilidade ===\\n\" \
+         f\"Repo: {os.getenv('REPO','')}\\n\" \
+         f\"Ref: {os.getenv('REF_NAME','')}\\n\" \
+         f\"Commit: {os.getenv('SHA','')}\\n\" \
+         f\"Ator: {os.getenv('ACTOR','')}\\n\" \
+         f\"Run: {os.getenv('RUN_URL','')}\\n\"); \
+payload={'input': {'name': title, 'content': content, 'status': 1}}; \
+json.dump(payload, open('payload.json','w',encoding='utf-8'), ensure_ascii=False)"
           echo "::group::Payload"
           cat payload.json
           echo "::endgroup::"
-
           http_code=$(curl --connect-timeout 5 --max-time 30 -sS -o response.json -w "%{http_code}" \
             -H "Content-Type: application/json" \
             -H "App-Token: $GLPI_APP_TOKEN" \
