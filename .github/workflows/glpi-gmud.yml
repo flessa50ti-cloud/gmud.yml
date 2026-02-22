@@ -80,7 +80,6 @@ jobs:
 
           [[ "$http_code" == "200" ]] || { echo "::error::Falha ao iniciar sessão no GLPI"; exit 1; }
 
-          # Extrai session_token do JSON: {"session_token":"...."}
           SESSION_TOKEN="$(sed -n 's/.*"session_token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' glpi_init_session.json | head -n1)"
           [[ -n "$SESSION_TOKEN" ]] || { echo "::error::Sem session_token"; exit 1; }
 
@@ -100,35 +99,25 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Escolhe categoria ITIL (input > secret)
           ITIL="${ITIL_INPUT:-}"
           if [[ -z "$ITIL" ]]; then ITIL="${ITIL_SECRET:-}"; fi
 
-          # Escape básico para JSON (\, ", quebras de linha)
           esc() {
-            printf '%s' "$1" \
-              | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e ':a;N;$!ba;s/\n/\\n/g'
+            printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e ':a;N;$!ba;s/\n/\\n/g'
           }
 
           TITLE_ESC="$(esc "$TITLE")"
           DESC_ESC="$(esc "$DESC")"
 
-          # Monta o JSON
           if [[ -n "${ITIL:-}" ]]; then
             if [[ "$ITIL" =~ ^[0-9]+$ ]]; then
-              cat > glpi_change_payload.json <<EOF
-{"input":{"name":"$TITLE_ESC","content":"$DESC_ESC","impact":$IMPACT,"urgency":$URGENCY,"priority":$PRIORITY,"itilcategories_id":$ITIL}}
-EOF
+              printf '%s' "{"input":{"name":"$TITLE_ESC","content":"$DESC_ESC","impact":$IMPACT,"urgency":$URGENCY,"priority":$PRIORITY,"itilcategories_id":$ITIL}}\n" > glpi_change_payload.json
             else
               ITIL_ESC="$(esc "$ITIL")"
-              cat > glpi_change_payload.json <<EOF
-{"input":{"name":"$TITLE_ESC","content":"$DESC_ESC","impact":$IMPACT,"urgency":$URGENCY,"priority":$PRIORITY,"itilcategories_id":"$ITIL_ESC"}}
-EOF
+              printf '%s' "{"input":{"name":"$TITLE_ESC","content":"$DESC_ESC","impact":$IMPACT,"urgency":$URGENCY,"priority":$PRIORITY,"itilcategories_id":"$ITIL_ESC"}}\n" > glpi_change_payload.json
             fi
           else
-            cat > glpi_change_payload.json <<EOF
-{"input":{"name":"$TITLE_ESC","content":"$DESC_ESC","impact":$IMPACT,"urgency":$URGENCY,"priority":$PRIORITY}}
-EOF
+            printf '%s' "{"input":{"name":"$TITLE_ESC","content":"$DESC_ESC","impact":$IMPACT,"urgency":$URGENCY,"priority":$PRIORITY}}\n" > glpi_change_payload.json
           fi
 
           echo "::group::Payload"
@@ -158,7 +147,6 @@ EOF
 
           [[ "$http_code" == "200" || "$http_code" == "201" ]] || { echo "::error::Falha ao criar GMUD"; exit 1; }
 
-          # Extrai id do JSON: {"id":123} ou {"id":"123"}
           CHANGE_ID="$(sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\?\([0-9]\+\)"\?.*/\1/p' glpi_change_create_response.json | head -n1)"
           [[ -n "$CHANGE_ID" ]] || { echo "::error::Não consegui extrair o ID"; exit 1; }
 
@@ -218,8 +206,8 @@ EOF
             echo "## Resultado - GMUD (GLPI)"
             echo ""
             if [[ -n "${CHANGE_ID:-}" ]]; then
-              echo "- **Change ID:** \`${CHANGE_ID}\`"
-              echo "- **GET:** \`${BASE}/Change/${CHANGE_ID}\`"
+              echo "- **Change ID:** \`$CHANGE_ID\`"
+              echo "- **GET:** \`$BASE/Change/$CHANGE_ID\`"
             else
               echo "- **Change ID:** (não disponível)"
             fi
