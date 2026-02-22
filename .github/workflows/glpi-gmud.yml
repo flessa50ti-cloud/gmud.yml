@@ -38,14 +38,14 @@ jobs:
           cat init.json || true
 
           if [ "$http_code" != "200" ]; then
-            echo "Falha no initSession"
+            echo "::error::Falha no initSession"
             exit 1
           fi
 
           SESSION_TOKEN=$(python3 -c "import json; print(json.load(open('init.json')).get('session_token',''))" 2>/dev/null || true)
 
           if [ -z "$SESSION_TOKEN" ]; then
-            echo "session_token vazio"
+            echo "::error::session_token vazio"
             exit 1
           fi
 
@@ -67,11 +67,14 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Conteúdo em UMA linha para não quebrar JSON
-          CONTENT="Deploy automático (PRODUÇÃO) | Repo=$REPO | Ref=$REF | SHA=$SHA | Ator=$ACTOR | Run=$RUN_URL"
+          export CONTENT="Deploy automático (PRODUÇÃO) | Repo=$REPO | Ref=$REF | SHA=$SHA | Ator=$ACTOR | Run=$RUN_URL"
 
-          # Cria payload.json sem heredoc e sem multilinha
+          # Gera payload.json com JSON válido (sem risco de aspas/quebras de linha)
           python3 -c "import json,os; json.dump({'input':{'name':'GMUD via GitHub Actions','content':os.environ['CONTENT'],'status':1}}, open('payload.json','w',encoding='utf-8'), ensure_ascii=False)"
+
+          echo "::group::Payload"
+          cat payload.json || true
+          echo "::endgroup::"
 
           http_code=$(curl --connect-timeout 5 --max-time 30 -sS -o response.json -w "%{http_code}" \
             -H "Content-Type: application/json" \
@@ -81,18 +84,20 @@ jobs:
             "$BASE/Change" || true)
 
           echo "HTTP: $http_code"
+          echo "::group::Create response"
           cat response.json || true
+          echo "::endgroup::"
 
           if [ "$http_code" != "200" ] && [ "$http_code" != "201" ]; then
-            echo "Falha ao criar GMUD"
+            echo "::error::Falha ao criar GMUD"
             exit 1
           fi
 
-          # Extrai ID de forma simples (funciona com {"id":123} ou {"id":"123"})
+          # Extrai ID (funciona com id numérico e id como string)
           CHANGE_ID=$(sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\?\([0-9]\+\)"\?.*/\1/p' response.json | head -n1)
 
           if [ -z "$CHANGE_ID" ]; then
-            echo "Não consegui extrair o ID do Change"
+            echo "::error::Não consegui extrair o ID do Change"
             exit 1
           fi
 
