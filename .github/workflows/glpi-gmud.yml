@@ -5,9 +5,22 @@ on:
 
 jobs:
   create-gmud:
-    runs-on: ubuntu-latest
+    # Use o self-hosted (na sua rede 192.168.x.x)
+    runs-on: [self-hosted, Linux, X64]
+    # Se você tiver o label da VM, pode usar assim (recomendado):
+    # runs-on: [self-hosted, VM-CNES-CEGISS]
 
     steps:
+      - name: Debug runner
+        shell: bash
+        run: |
+          set -e
+          echo "HOSTNAME=$(hostname)"
+          echo "IPs:"
+          ip -br a || true
+          echo "Rotas:"
+          ip route || true
+
       - name: Init session (login/senha)
         id: init_session
         shell: bash
@@ -20,27 +33,28 @@ jobs:
           set -euo pipefail
           BASE="${GLPI_API_BASE%/}"
 
-          http_code=$(curl -sS -o init.json -w "%{http_code}" \
+          # falha rápido se não conectar
+          http_code=$(curl --connect-timeout 5 --max-time 15 -sS -o init.json -w "%{http_code}" \
             -H "App-Token: $GLPI_APP_TOKEN" \
             -u "$GLPI_LOGIN:$GLPI_PASSWORD" \
-            "$BASE/initSession")
+            "$BASE/initSession" || true)
 
           echo "HTTP: $http_code"
-          cat init.json
+          cat init.json || true
 
           if [ "$http_code" != "200" ]; then
-            echo "Falha no initSession"
+            echo "::error::Falha no initSession"
             exit 1
           fi
 
           SESSION_TOKEN=$(python3 -c "import json; print(json.load(open('init.json')).get('session_token',''))")
 
           if [ -z "$SESSION_TOKEN" ]; then
-            echo "session_token vazio"
+            echo "::error::session_token vazio"
             exit 1
           fi
 
-          echo "session_token=$SESSION_TOKEN" >> $GITHUB_OUTPUT
+          echo "session_token=$SESSION_TOKEN" >> "$GITHUB_OUTPUT"
 
       - name: Criar GMUD (Change)
         shell: bash
@@ -54,17 +68,17 @@ jobs:
 
           echo '{"input":{"name":"GMUD via GitHub Actions","content":"Deploy automático"}}' > payload.json
 
-          http_code=$(curl -sS -o response.json -w "%{http_code}" \
+          http_code=$(curl --connect-timeout 5 --max-time 20 -sS -o response.json -w "%{http_code}" \
             -H "Content-Type: application/json" \
             -H "App-Token: $GLPI_APP_TOKEN" \
             -H "Session-Token: $SESSION_TOKEN" \
             -X POST --data-binary @payload.json \
-            "$BASE/Change")
+            "$BASE/Change" || true)
 
           echo "HTTP: $http_code"
-          cat response.json
+          cat response.json || true
 
           if [ "$http_code" != "200" ] && [ "$http_code" != "201" ]; then
-            echo "Falha ao criar GMUD"
+            echo "::error::Falha ao criar GMUD"
             exit 1
           fi
