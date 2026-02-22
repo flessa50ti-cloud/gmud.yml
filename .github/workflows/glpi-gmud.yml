@@ -1,58 +1,3 @@
-name: GLPI GMUD
-
-on:
-  workflow_dispatch:
-
-jobs:
-  create-gmud:
-    # Força rodar no runner self-hosted com label "internal" (seu wazuh-server)
-    runs-on: [self-hosted, internal]
-
-    steps:
-      - name: Debug runner
-        shell: bash
-        run: |
-          set -e
-          echo "HOSTNAME=$(hostname)"
-          echo "IPs:"
-          ip -br a || true
-          echo "Rotas:"
-          ip route || true
-
-      - name: Init session (login/senha)
-        id: init_session
-        shell: bash
-        env:
-          GLPI_API_BASE: ${{ secrets.GLPI_API_BASE }}
-          GLPI_APP_TOKEN: ${{ secrets.GLPI_APP_TOKEN }}
-          GLPI_LOGIN: ${{ secrets.GLPI_LOGIN }}
-          GLPI_PASSWORD: ${{ secrets.GLPI_PASSWORD }}
-        run: |
-          set -euo pipefail
-          BASE="${GLPI_API_BASE%/}"
-
-          http_code=$(curl --connect-timeout 5 --max-time 15 -sS -o init.json -w "%{http_code}" \
-            -H "App-Token: $GLPI_APP_TOKEN" \
-            -u "$GLPI_LOGIN:$GLPI_PASSWORD" \
-            "$BASE/initSession" || true)
-
-          echo "HTTP: $http_code"
-          cat init.json || true
-
-          if [ "$http_code" != "200" ]; then
-            echo "::error::Falha no initSession"
-            exit 1
-          fi
-
-          SESSION_TOKEN=$(python3 -c "import json; print(json.load(open('init.json')).get('session_token',''))")
-
-          if [ -z "$SESSION_TOKEN" ]; then
-            echo "::error::session_token vazio"
-            exit 1
-          fi
-
-          echo "session_token=$SESSION_TOKEN" >> "$GITHUB_OUTPUT"
-
       - name: Criar GMUD (Change)
         shell: bash
         env:
@@ -63,7 +8,14 @@ jobs:
           set -euo pipefail
           BASE="${GLPI_API_BASE%/}"
 
-          echo '{"input":{"name":"GMUD via GitHub Actions","content":"Deploy automático"}}' > payload.json
+          echo "GLPI_API_BASE=$BASE"
+
+          # payload com input (e status explícito)
+          echo '{"input":{"name":"GMUD via GitHub Actions","content":"Deploy automático","status":1}}' > payload.json
+
+          echo "::group::Payload"
+          cat payload.json
+          echo "::endgroup::"
 
           http_code=$(curl --connect-timeout 5 --max-time 20 -sS -o response.json -w "%{http_code}" \
             -H "Content-Type: application/json" \
@@ -73,9 +25,36 @@ jobs:
             "$BASE/Change" || true)
 
           echo "HTTP: $http_code"
+          echo "::group::Create response"
           cat response.json || true
+          echo "::endgroup::"
 
           if [ "$http_code" != "200" ] && [ "$http_code" != "201" ]; then
             echo "::error::Falha ao criar GMUD"
             exit 1
+          fi
+
+          # Extrai ID retornado
+          CHANGE_ID=$(python3 -c "import json; print(json.load(open('response.json')).get('id',''))" 2>/dev/null || true)
+          if [ -z "$CHANGE_ID" ]; then
+            echo "::error::Não consegui extrair o ID do Change"
+            exit 1
+          fi
+
+          echo "CHANGE_ID=$CHANGE_ID"
+          echo "URL para abrir (ajuste o /glpi conforme seu acesso): http://192.168.0.44/glpi/front/change.form.php?id=$CHANGE_ID"
+
+          # Confirma que existe via API
+          get_code=$(curl --connect-timeout 5 --max-time 20 -sS -o get.json -w "%{http_code}" \
+            -H "App-Token: $GLPI_APP_TOKEN" \
+            -H "Session-Token: $SESSION_TOKEN" \
+            "$BASE/Change/$CHANGE_ID" || true)
+
+          echo "GET HTTP: $get_code"
+          echo "::group::GET Change"
+          cat get.json || true
+          echo "::endgroup::"
+
+          if [ "$get_code" != "200" ]; then
+            echo "::warning::Criei mas não consegui ler via API (permissão/entidade). Mesmo assim, o ID acima é a prova."
           fi
