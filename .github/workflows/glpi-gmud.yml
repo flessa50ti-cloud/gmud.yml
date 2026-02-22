@@ -6,6 +6,7 @@ on:
 jobs:
   create-gmud:
     runs-on: ubuntu-latest
+
     steps:
       - name: Init session (login/senha)
         id: init_session
@@ -19,26 +20,27 @@ jobs:
           set -euo pipefail
           BASE="${GLPI_API_BASE%/}"
 
-          http_code="$(curl -sS -o init.json -w "%{http_code}" \
-            -H "Content-Type: application/json" \
+          http_code=$(curl -sS -o init.json -w "%{http_code}" \
             -H "App-Token: $GLPI_APP_TOKEN" \
             -u "$GLPI_LOGIN:$GLPI_PASSWORD" \
-            "$BASE/initSession" || true)"
+            "$BASE/initSession")
 
           echo "HTTP: $http_code"
-          cat init.json || true
+          cat init.json
 
-          [[ "$http_code" == "200" ]] || { echo "::error::Falha no initSession"; exit 1; }
+          if [ "$http_code" != "200" ]; then
+            echo "Falha no initSession"
+            exit 1
+          fi
 
-          SESSION_TOKEN="$(python3 - <<'PY'
-import json
-with open("init.json","r",encoding="utf-8") as f:
-    print(json.load(f).get("session_token",""))
-PY
-          )"
+          SESSION_TOKEN=$(python3 -c "import json; print(json.load(open('init.json')).get('session_token',''))")
 
-          [[ -n "$SESSION_TOKEN" ]] || { echo "::error::session_token vazio"; exit 1; }
-          echo "session_token=$SESSION_TOKEN" >> "$GITHUB_OUTPUT"
+          if [ -z "$SESSION_TOKEN" ]; then
+            echo "session_token vazio"
+            exit 1
+          fi
+
+          echo "session_token=$SESSION_TOKEN" >> $GITHUB_OUTPUT
 
       - name: Criar GMUD (Change)
         shell: bash
@@ -46,34 +48,23 @@ PY
           GLPI_API_BASE: ${{ secrets.GLPI_API_BASE }}
           GLPI_APP_TOKEN: ${{ secrets.GLPI_APP_TOKEN }}
           SESSION_TOKEN: ${{ steps.init_session.outputs.session_token }}
-          CHANGE_TITLE: "GMUD via GitHub Actions"
-          CHANGE_DESCRIPTION: "Deploy automático pelo pipeline"
         run: |
           set -euo pipefail
           BASE="${GLPI_API_BASE%/}"
-          PAYLOAD_FILE="glpi_change_payload.json"
 
-          # Gera JSON correto com wrapper "input" (evita erro de JSON inválido)
-          python3 - <<'PY'
-import json, os
-payload = {"input": {"name": os.getenv("CHANGE_TITLE","GMUD via Actions"),
-                     "content": os.getenv("CHANGE_DESCRIPTION","Criado automaticamente")}}
-with open("glpi_change_payload.json","w",encoding="utf-8") as f:
-    json.dump(payload, f, ensure_ascii=False)
-PY
+          echo '{"input":{"name":"GMUD via GitHub Actions","content":"Deploy automático"}}' > payload.json
 
-          echo "::group::Payload"
-          cat "$PAYLOAD_FILE"
-          echo "::endgroup::"
-
-          http_code="$(curl -sS -o response.json -w "%{http_code}" \
+          http_code=$(curl -sS -o response.json -w "%{http_code}" \
             -H "Content-Type: application/json" \
             -H "App-Token: $GLPI_APP_TOKEN" \
             -H "Session-Token: $SESSION_TOKEN" \
-            -X POST --data-binary @"$PAYLOAD_FILE" \
-            "$BASE/Change" || true)"
+            -X POST --data-binary @payload.json \
+            "$BASE/Change")
 
           echo "HTTP: $http_code"
-          cat response.json || true
+          cat response.json
 
-          [[ "$http_code" == "200" || "$http_code" == "201" ]] || { echo "::error::Falha ao criar GMUD"; exit 1; }
+          if [ "$http_code" != "200" ] && [ "$http_code" != "201" ]; then
+            echo "Falha ao criar GMUD"
+            exit 1
+          fi
