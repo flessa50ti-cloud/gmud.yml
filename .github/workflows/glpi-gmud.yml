@@ -2,10 +2,31 @@ name: GLPI GMUD
 
 on:
   workflow_dispatch:
+    inputs:
+      environment:
+        description: "Ambiente do deploy"
+        required: true
+        type: choice
+        options:
+          - production
+          - homolog
+        default: production
+      title:
+        description: "Título da GMUD"
+        required: false
+        default: "GMUD via GitHub Actions"
+      description:
+        description: "Descrição resumida"
+        required: false
+        default: "Deploy automático"
 
 jobs:
-  create-gmud:
+  deploy-prod:
+    if: ${{ inputs.environment == 'production' }}
     runs-on: [self-hosted, internal]
+
+    # ✅ Gate de aprovação (configure reviewers em Settings → Environments → production)
+    environment: production
 
     steps:
       - name: Debug runner
@@ -26,7 +47,7 @@ jobs:
           set -euo pipefail
           BASE="${GLPI_API_BASE%/}"
 
-          http_code=$(curl -sS -o init.json -w "%{http_code}" \
+          http_code=$(curl --connect-timeout 5 --max-time 20 -sS -o init.json -w "%{http_code}" \
             -H "App-Token: $GLPI_APP_TOKEN" \
             -u "$GLPI_LOGIN:$GLPI_PASSWORD" \
             "$BASE/initSession" || true)
@@ -35,32 +56,62 @@ jobs:
           cat init.json || true
 
           if [ "$http_code" != "200" ]; then
-            echo "Falha no initSession"
+            echo "::error::Falha no initSession"
             exit 1
           fi
 
-          SESSION_TOKEN=$(python3 -c "import json; print(json.load(open('init.json')).get('session_token',''))")
-
+          SESSION_TOKEN=$(python3 -c "import json; print(json.load(open('init.json')).get('session_token',''))" 2>/dev/null || true)
           if [ -z "$SESSION_TOKEN" ]; then
-            echo "session_token vazio"
+            echo "::error::session_token vazio"
             exit 1
           fi
 
           echo "session_token=$SESSION_TOKEN" >> "$GITHUB_OUTPUT"
+          echo "base=$BASE" >> "$GITHUB_OUTPUT"
 
-      - name: Criar GMUD (Change)
+      - name: Criar GMUD (Change) + rastreabilidade + confirmar
+        id: create_change
         shell: bash
         env:
-          GLPI_API_BASE: ${{ secrets.GLPI_API_BASE }}
+          BASE: ${{ steps.init_session.outputs.base }}
           GLPI_APP_TOKEN: ${{ secrets.GLPI_APP_TOKEN }}
           SESSION_TOKEN: ${{ steps.init_session.outputs.session_token }}
+          TITLE: ${{ inputs.title }}
+          DESC: ${{ inputs.description }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_ACTOR: ${{ github.actor }}
         run: |
           set -euo pipefail
-          BASE="${GLPI_API_BASE%/}"
 
-          echo '{"input":{"name":"GMUD via GitHub Actions","content":"Deploy automático","status":1}}' > payload.json
+          RUN_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
 
-          http_code=$(curl -sS -o response.json -w "%{http_code}" \
+          python3 - <<'PY'
+import json, os
+title = os.getenv("TITLE") or "GMUD via GitHub Actions"
+desc  = os.getenv("DESC")  or "Deploy automático"
+content = (
+  f"{desc}\n\n"
+  "=== Rastreabilidade ===\n"
+  f"Repo: {os.environ.get('GITHUB_REPOSITORY','')}\n"
+  f"Ref: {os.environ.get('GITHUB_REF_NAME','')}\n"
+  f"Commit: {os.environ.get('GITHUB_SHA','')}\n"
+  f"Ator: {os.environ.get('GITHUB_ACTOR','')}\n"
+  f"Run: {os.environ.get('RUN_URL','')}\n"
+)
+payload = {"input": {"name": title, "content": content, "status": 1}}
+with open("payload.json","w",encoding="utf-8") as f:
+  json.dump(payload, f, ensure_ascii=False)
+PY
+
+          echo "::group::Payload"
+          cat payload.json
+          echo "::endgroup::"
+
+          http_code=$(curl --connect-timeout 5 --max-time 30 -sS -o response.json -w "%{http_code}" \
             -H "Content-Type: application/json" \
             -H "App-Token: $GLPI_APP_TOKEN" \
             -H "Session-Token: $SESSION_TOKEN" \
@@ -68,9 +119,49 @@ jobs:
             "$BASE/Change" || true)
 
           echo "HTTP: $http_code"
+          echo "::group::Create response"
           cat response.json || true
+          echo "::endgroup::"
 
           if [ "$http_code" != "200" ] && [ "$http_code" != "201" ]; then
-            echo "Falha ao criar GMUD"
+            echo "::error::Falha ao criar GMUD"
             exit 1
           fi
+
+          CHANGE_ID=$(python3 -c "import json; print(json.load(open('response.json')).get('id',''))" 2>/dev/null || true)
+          if [ -z "$CHANGE_ID" ]; then
+            echo "::error::Não consegui extrair o ID do Change"
+            exit 1
+          fi
+
+          echo "CHANGE_ID=$CHANGE_ID"
+          echo "change_id=$CHANGE_ID" >> "$GITHUB_OUTPUT"
+
+          get_code=$(curl --connect-timeout 5 --max-time 20 -sS -o get.json -w "%{http_code}" \
+            -H "App-Token: $GLPI_APP_TOKEN" \
+            -H "Session-Token: $SESSION_TOKEN" \
+            "$BASE/Change/$CHANGE_ID" || true)
+
+          echo "GET HTTP: $get_code"
+          echo "::group::GET Change"
+          cat get.json || true
+          echo "::endgroup::"
+
+      - name: Deploy produção (placeholder)
+        shell: bash
+        run: |
+          echo "Deploy aprovado e GMUD criada."
+          echo "GMUD ID: ${{ steps.create_change.outputs.change_id }}"
+
+      - name: Kill session
+        if: always()
+        shell: bash
+        env:
+          BASE: ${{ steps.init_session.outputs.base }}
+          GLPI_APP_TOKEN: ${{ secrets.GLPI_APP_TOKEN }}
+          SESSION_TOKEN: ${{ steps.init_session.outputs.session_token }}
+        run: |
+          curl -sS -o /dev/null \
+            -H "App-Token: $GLPI_APP_TOKEN" \
+            -H "Session-Token: $SESSION_TOKEN" \
+            "$BASE/killSession" || true
