@@ -5,10 +5,8 @@ on:
 
 jobs:
   create-gmud:
-    # Use o self-hosted (na sua rede 192.168.x.x)
-    runs-on: [self-hosted, Linux, X64]
-    # Se você tiver o label da VM, pode usar assim (recomendado):
-    # runs-on: [self-hosted, VM-CNES-CEGISS]
+    # Força rodar no runner self-hosted com label "internal" (seu wazuh-server)
+    runs-on: [self-hosted, internal]
 
     steps:
       - name: Debug runner
@@ -33,7 +31,6 @@ jobs:
           set -euo pipefail
           BASE="${GLPI_API_BASE%/}"
 
-          # falha rápido se não conectar
           http_code=$(curl --connect-timeout 5 --max-time 15 -sS -o init.json -w "%{http_code}" \
             -H "App-Token: $GLPI_APP_TOKEN" \
             -u "$GLPI_LOGIN:$GLPI_PASSWORD" \
